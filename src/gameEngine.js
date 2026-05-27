@@ -261,7 +261,9 @@ function generalChoices() {
     { label: "상점", command: "상점" },
     { label: "인벤토리", command: "인벤토리" },
     { label: "휴식", command: "휴식" },
-    { label: "스탯", command: "__stat_menu" }
+    { label: "스탯", command: "__stat_menu" },
+    { label: "전직", command: "__job_menu" },
+    { label: "던전", command: "__dungeon_menu" }
   ];
 }
 
@@ -271,6 +273,23 @@ function statChoices() {
     { label: "민첩 +1", command: "스탯 민첩 1" },
     { label: "지능 +1", command: "스탯 지능 1" },
     { label: "체력 +1", command: "스탯 체력 1" }
+  ];
+}
+
+function jobChoices() {
+  return [
+    { label: "전사", command: "전직 전사" },
+    { label: "마법사", command: "전직 마법사" },
+    { label: "궁수", command: "전직 궁수" },
+    { label: "도적", command: "전직 도적" }
+  ];
+}
+
+function dungeonMenuChoices() {
+  return [
+    { label: "던전 파티 생성", command: "던전생성" },
+    { label: "파티 참가", command: "__dungeon_join_help" },
+    { label: "상태", command: "상태" }
   ];
 }
 
@@ -601,6 +620,23 @@ function showStatMenu(player) {
   ].join("\n");
 }
 
+function showJobMenu(player) {
+  return [
+    "[전직]",
+    `현재 직업: ${jobs[player.job].name}`,
+    "전직 가능한 직업을 선택하세요.",
+    "전직은 Lv.5부터 가능합니다."
+  ].join("\n");
+}
+
+function showDungeonMenu() {
+  return [
+    "[던전]",
+    "파티를 만들거나, 파티 번호를 아는 경우 직접 입력하세요.",
+    "예: 던전참가 1"
+  ].join("\n");
+}
+
 function changeJob(player, jobName) {
   const jobMap = { 전사: "warrior", 마법사: "mage", 궁수: "archer", 도적: "rogue" };
   const nextJob = jobMap[jobName] || jobName;
@@ -783,6 +819,22 @@ function handleCommand(userId, rawText) {
     } else if (command === "__stat_menu") {
       reply = showStatMenu(player);
       choices = statChoices();
+      backCommand = "__main_menu";
+    } else if (command === "__job_menu") {
+      reply = showJobMenu(player);
+      choices = jobChoices();
+      backCommand = "__main_menu";
+    } else if (command === "__dungeon_menu") {
+      reply = showDungeonMenu();
+      choices = dungeonMenuChoices();
+      backCommand = "__main_menu";
+    } else if (command === "__dungeon_join_help") {
+      reply = "참가할 파티 번호를 알고 있어야 합니다.\n예: 던전참가 1";
+      choices = dungeonMenuChoices();
+      backCommand = "__main_menu";
+    } else if (command === "__main_menu") {
+      reply = "기본 메뉴입니다.";
+      choices = generalChoices();
     } else if (command === "__battle_skills" || command === "스킬") {
       const availableSkills = skillChoices(player);
       reply = availableSkills.length ? "사용할 스킬을 선택하세요." : "사용 가능한 스킬이 없습니다.";
@@ -795,9 +847,11 @@ function handleCommand(userId, rawText) {
     } else if (command === "마을") {
       reply = showTown(player);
       choices = townChoices(player);
+      backCommand = "__main_menu";
     } else if (command === "이동") {
       reply = moveTown(player, restText);
       choices = townChoices(player);
+      backCommand = "__main_menu";
     } else if (command === "휴식") {
       reply = rest(player);
     } else if (command === "사냥") {
@@ -819,14 +873,19 @@ function handleCommand(userId, rawText) {
     } else if (command === "인벤토리" || command === "가방") {
       reply = inventory(player);
       choices = inventoryChoices(player);
+      backCommand = "__main_menu";
     } else if (command === "장착") {
       reply = equip(player, restText);
       choices = inventoryChoices(player);
+      backCommand = "__main_menu";
     } else if (command === "스탯") {
       reply = addStat(player, arg1, arg2);
       choices = statChoices();
+      backCommand = "__main_menu";
     } else if (command === "전직") {
       reply = changeJob(player, arg1);
+      choices = jobChoices();
+      backCommand = "__main_menu";
     } else if (command === "던전생성") {
       reply = createDungeonParty(db, player, userId);
     } else if (command === "던전참가") {
