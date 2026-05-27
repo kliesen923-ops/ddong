@@ -500,18 +500,27 @@ function showShop(player) {
 }
 
 function showShopBuy(player) {
-  const town = towns[player.town];
-  return [
+  const town      = towns[player.town];
+  const enh       = player.enhance || {};
+  const slotNames = { weapon: "무기", hat: "모자", top: "상의", bottom: "하의" };
+  const lines = [
     `[${town.name} 상점 - 구매]`,
     `소지금: ${player.gold}G`,
-    ...town.shop.map((id) => {
-      const item = items[id];
-      const stats = formatStats(item);
-      return `${item.name} - ${item.price}G${stats ? ` / ${stats}` : ""}`;
-    }),
     "",
-    "번호로 구매하세요."
-  ].join("\n");
+    "─ 현재 장착 중"
+  ];
+  for (const slot of EQUIPMENT_SLOTS) {
+    const id = player.equipment[slot];
+    if (id) {
+      const enhStr  = (enh[slot] || 0) > 0 ? ` +${enh[slot]}` : "";
+      const statStr = formatStats(items[id]);
+      lines.push(`${slotNames[slot]}: ${items[id].name}${enhStr}  ${statStr}`);
+    } else {
+      lines.push(`${slotNames[slot]}: 없음`);
+    }
+  }
+  lines.push("", "구매할 아이템을 선택하세요.");
+  return lines.join("\n");
 }
 
 function showShopSell(player) {
@@ -1143,10 +1152,31 @@ function shopMenuChoices() {
 }
 
 function shopBuyChoices(player) {
-  return towns[player.town].shop.map((id) => ({
-    label: `${items[id].name} (${items[id].price}G)`,
-    command: `구매 ${items[id].name}`
-  }));
+  const enh = player.enhance || {};
+  return towns[player.town].shop.map((id) => {
+    const item       = items[id];
+    const canAfford  = player.gold >= item.price;
+    const statStr    = formatStats(item);
+    const affordMark = canAfford ? "" : " ✗";
+
+    // 같은 슬롯 현재 장비와 주요 스탯 비교
+    let compareStr = "";
+    if (EQUIPMENT_SLOTS.includes(item.type)) {
+      const curId   = player.equipment[item.type];
+      const curItem = curId ? items[curId] : null;
+      if (curItem && curId !== id) {
+        const mainStat = (item.type === "weapon") ? "atk" : "def";
+        const enhBonus = (ENHANCE_BONUS[item.type]?.[mainStat] || 0) * (enh[item.type] || 0);
+        const diff     = (item[mainStat] || 0) - ((curItem[mainStat] || 0) + enhBonus);
+        if (diff > 0)       compareStr = ` ▲+${diff}`;
+        else if (diff < 0)  compareStr = ` ▼${diff}`;
+        else                compareStr = " →동일";
+      }
+    }
+
+    const label = `${item.name} (${item.price}G)${affordMark}  ${statStr}${compareStr}`;
+    return { label, command: `구매 ${item.name}` };
+  });
 }
 
 function shopSellChoices(player) {
@@ -1432,9 +1462,15 @@ function handleCommand(userId, rawText) {
       backCommand = "__main_menu";
     } else if (command === "__dungeon_create") {
       const selectable = dungeonSelectChoices(player);
-      reply   = selectable.length ? "[던전 선택]\n입장 가능한 던전을 선택하세요." : "입장 가능한 던전이 없습니다. 레벨을 올리세요.";
-      choices = selectable.length ? selectable : dungeonMenuChoices();
-      backCommand = "__dungeon_menu";
+      if (selectable.length) {
+        reply       = "[던전 선택]\n입장 가능한 던전을 선택하세요.";
+        choices     = selectable;
+        backCommand = "__dungeon_menu";
+      } else {
+        reply       = "입장 가능한 던전이 없습니다. 레벨을 올리세요.\n(고블린 동굴 Lv.3 / 어둠의 요새 Lv.20 / 용의 소굴 Lv.38)";
+        choices     = dungeonMenuChoices();
+        backCommand = "__main_menu";   // 실패 시 6 한 번이면 메인으로
+      }
     } else if (command === "던전생성") {
       reply   = createDungeonParty(db, player, userId, arg1);
     } else if (command === "__dungeon_room_list") {
