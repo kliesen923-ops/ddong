@@ -260,7 +260,17 @@ function generalChoices() {
     { label: "마을", command: "마을" },
     { label: "상점", command: "상점" },
     { label: "인벤토리", command: "인벤토리" },
-    { label: "휴식", command: "휴식" }
+    { label: "휴식", command: "휴식" },
+    { label: "스탯", command: "__stat_menu" }
+  ];
+}
+
+function statChoices() {
+  return [
+    { label: "힘 +1", command: "스탯 힘 1" },
+    { label: "민첩 +1", command: "스탯 민첩 1" },
+    { label: "지능 +1", command: "스탯 지능 1" },
+    { label: "체력 +1", command: "스탯 체력 1" }
   ];
 }
 
@@ -583,6 +593,14 @@ function addStat(player, statName, amountText) {
   return `스탯을 올렸습니다.\n\n${status(player)}`;
 }
 
+function showStatMenu(player) {
+  return [
+    "[스탯]",
+    `남은 스탯 포인트: ${player.statPoints}`,
+    "올릴 능력치를 선택하세요."
+  ].join("\n");
+}
+
 function changeJob(player, jobName) {
   const jobMap = { 전사: "warrior", 마법사: "mage", 궁수: "archer", 도적: "rogue" };
   const nextJob = jobMap[jobName] || jobName;
@@ -762,6 +780,9 @@ function handleCommand(userId, rawText) {
       reply = "전투 행동을 선택하세요.";
       const party = player.partyId ? db.parties[player.partyId] : null;
       choices = party?.started ? dungeonBattleChoices() : battleChoices();
+    } else if (command === "__stat_menu") {
+      reply = showStatMenu(player);
+      choices = statChoices();
     } else if (command === "__battle_skills" || command === "스킬") {
       const availableSkills = skillChoices(player);
       reply = availableSkills.length ? "사용할 스킬을 선택하세요." : "사용 가능한 스킬이 없습니다.";
@@ -803,6 +824,7 @@ function handleCommand(userId, rawText) {
       choices = inventoryChoices(player);
     } else if (command === "스탯") {
       reply = addStat(player, arg1, arg2);
+      choices = statChoices();
     } else if (command === "전직") {
       reply = changeJob(player, arg1);
     } else if (command === "던전생성") {
@@ -829,7 +851,7 @@ function handleCommand(userId, rawText) {
     } else if (!choices.length) {
       choices = generalChoices();
     }
-    if (command !== "__show_choices") player.choicePage = 0;
+    if (command !== "__show_choices" && !/^\d+$/.test(command)) player.choicePage = 0;
     player.choices = choices;
     player.choiceBackCommand = backCommand;
     reply = appendChoices(player, reply, choices);
