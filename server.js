@@ -1,6 +1,9 @@
 const http = require("http");
 const { handleCommand } = require("./src/gameEngine");
 
+// Windows CMD 창 크기 조절(최소화/최대화) 시 SIGBREAK 신호로 인한 종료 방지
+process.on("SIGBREAK", () => {});
+
 const PORT = Number(process.env.PORT || 3000);
 
 function sendJson(res, status, payload) {
