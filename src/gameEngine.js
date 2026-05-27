@@ -10,6 +10,7 @@ const EQUIPMENT_SLOTS = ["weapon", "hat", "top", "bottom"];
 const ENHANCE_BONUS = { weapon: { atk: 3 }, hat: { def: 1 }, top: { def: 2 }, bottom: { def: 1 } };
 const ENHANCE_COST = (lv) => Math.floor(100 * Math.pow(1.6, lv));  // +0→1: 100G, +1→2: 160G ...
 const ENHANCE_MAX = 10;
+const GOLD_STEPS = [1, 5, 10, 50, 100, 500, 1000];
 
 // 마법 계열 직업 (ATK = INT 기반)
 const MAGIC_JOBS = new Set(["mage", "wizard", "archmage", "cleric", "priest", "bishop",
@@ -19,8 +20,16 @@ const HYBRID_JOBS = new Set(["paladin", "holy_knight", "divine_knight"]);
 
 function loadDb() {
   if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-  if (!fs.existsSync(DB_PATH)) return { players: {}, battles: {}, parties: {}, nextPartyId: 1 };
-  return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
+  const db = fs.existsSync(DB_PATH)
+    ? JSON.parse(fs.readFileSync(DB_PATH, "utf8"))
+    : { players: {}, battles: {}, parties: {}, nextPartyId: 1 };
+  db.players ||= {};
+  db.battles ||= {};
+  db.parties ||= {};
+  db.trades ||= {};
+  db.nextPartyId ||= 1;
+  db.nextTradeId ||= 1;
+  return db;
 }
 
 function saveDb(db) {
@@ -43,7 +52,8 @@ function createPlayer(userId) {
     inventory: ["rusty_sword", "cloth_hat", "cloth_armor", "cloth_pants"],
     equipment: { weapon: "rusty_sword", hat: "cloth_hat", top: "cloth_armor", bottom: "cloth_pants" },
     enhance: { weapon: 0, hat: 0, top: 0, bottom: 0 },
-    partyId: null
+    partyId: null,
+    tradeId: null
   };
 }
 
@@ -61,6 +71,7 @@ function normalizePlayer(p) {
   for (const slot of EQUIPMENT_SLOTS) { if (!p.equipment[slot]) p.equipment[slot] = null; }
   p.enhance ||= { weapon: 0, hat: 0, top: 0, bottom: 0 };
   for (const slot of EQUIPMENT_SLOTS) { p.enhance[slot] ||= 0; }
+  p.tradeId ||= null;
 }
 
 // ── 직업 트리 ──────────────────────────────────────────────────────────
@@ -84,6 +95,72 @@ function getAvailableNextJobs(player) {
 function expToNext(level) { return 80 + level * level * 25; }
 
 function itemStats(itemId) { return items[itemId] || {}; }
+
+function itemLevel(itemId) {
+  return Math.max(1, Number(items[itemId]?.reqLevel || 1));
+}
+
+function enhanceBonus(slot, itemId) {
+  const item = items[itemId] || {};
+  const level = itemLevel(itemId);
+  if (slot === "weapon") {
+    const value = 2 + Math.ceil(level / 10);
+    return (item.magic || 0) > (item.atk || 0) ? { magic: value } : { atk: value };
+  }
+  const value = Math.max(1, Math.floor(level / 12) + (slot === "top" ? 2 : 1));
+  return { def: value };
+}
+
+function enhanceCost(slot, itemId, lv) {
+  const item = items[itemId] || {};
+  const level = itemLevel(itemId);
+  const base = 70 + level * level * 1.8 + (item.price || 0) * 0.18;
+  const slotRate = slot === "weapon" ? 1.18 : slot === "top" ? 1.08 : 1;
+  return Math.floor(base * slotRate * Math.pow(1.45, lv));
+}
+
+function statSnapshotForRequirement(player) {
+  const job = jobs[player.job];
+  return {
+    str: player.stats.str + (job.statBonus.str || 0),
+    dex: player.stats.dex + (job.statBonus.dex || 0),
+    int: player.stats.int + (job.statBonus.int || 0),
+    vit: player.stats.vit + (job.statBonus.vit || 0)
+  };
+}
+
+function itemRequirementText(item) {
+  const parts = [];
+  if (item.reqLevel) parts.push(`Lv.${item.reqLevel}+`);
+  if (item.reqStat) {
+    parts.push(Object.entries(item.reqStat).map(([k, v]) => `${k.toUpperCase()} ${v}+`).join("/"));
+  }
+  if (item.reqJob?.length) {
+    parts.push(item.reqJob.map((id) => jobs[id]?.name || id).join("/"));
+  }
+  return parts.length ? `조건: ${parts.join(" / ")}` : "조건: 없음";
+}
+
+function canEquipItem(player, itemId) {
+  const item = items[itemId];
+  if (!item) return { ok: false, reason: "아이템 정보를 찾을 수 없습니다." };
+  if (!EQUIPMENT_SLOTS.includes(item.type)) return { ok: false, reason: "장착할 수 없는 아이템입니다." };
+  if (player.level < (item.reqLevel || 1)) return { ok: false, reason: `레벨 ${item.reqLevel} 이상 필요` };
+
+  const baseStats = statSnapshotForRequirement(player);
+  for (const [stat, required] of Object.entries(item.reqStat || {})) {
+    if ((baseStats[stat] || 0) < required) return { ok: false, reason: `${stat.toUpperCase()} ${required} 이상 필요` };
+  }
+
+  if (item.reqJob?.length) {
+    const chain = getJobChain(player.job);
+    if (!item.reqJob.some((jobId) => chain.includes(jobId))) {
+      return { ok: false, reason: `장착 가능 직업: ${item.reqJob.map((id) => jobs[id]?.name || id).join(", ")}` };
+    }
+  }
+
+  return { ok: true, reason: "" };
+}
 
 function addStats(target, source) {
   for (const key of ["str", "dex", "int", "vit", "atk", "def", "magic"]) {
@@ -110,8 +187,9 @@ function equipmentStats(player) {
   const enh = player.enhance || {};
   for (const slot of EQUIPMENT_SLOTS) {
     const lv = enh[slot] || 0;
-    if (lv > 0 && ENHANCE_BONUS[slot]) {
-      for (const [stat, perLv] of Object.entries(ENHANCE_BONUS[slot])) {
+    const itemId = player.equipment[slot];
+    if (lv > 0 && itemId) {
+      for (const [stat, perLv] of Object.entries(enhanceBonus(slot, itemId))) {
         total[stat] = (total[stat] || 0) + lv * perLv;
       }
     }
@@ -584,8 +662,10 @@ function showInventoryEquip(player) {
       const enhStr     = enhLv > 0 ? ` +${enhLv}` : "";
       const cntStr     = cnt > 1 ? ` x${cnt}` : "";
       const statStr    = formatStats(item);
+      const requirement = itemRequirementText(item);
+      const equipCheck  = canEquipItem(player, id);
       const mark       = isEquipped ? "★" : "　";
-      lines.push(`  ${mark} ${item.name}${enhStr}${cntStr}  ${statStr}`);
+      lines.push(`  ${mark} ${item.name}${enhStr}${cntStr}  ${statStr}  ${requirement}${equipCheck.ok ? "" : ` (${equipCheck.reason})`}`);
       if (!isEquipped) {
         choices.push({ label: `${item.name} 장착`, command: `__inv_compare ${id}` });
       }
@@ -637,11 +717,14 @@ function showItemCompare(player, itemId) {
   lines.push(`새 장비: ${item.name}`);
   const ns = formatStats(item);
   if (ns) lines.push(`  ${ns}`);
+  lines.push(`  ${itemRequirementText(item)}`);
+  const equipCheck = canEquipItem(player, itemId);
+  if (!equipCheck.ok) lines.push(`  장착 불가: ${equipCheck.reason}`);
 
   if (curItem) {
     const diffs = [];
     for (const key of ["atk", "def", "magic", "str", "dex", "int", "vit"]) {
-      const enhBonus = (ENHANCE_BONUS[item.type]?.[key] || 0) * enhLv;
+      const enhBonus = (enhanceBonus(item.type, currentId)?.[key] || 0) * enhLv;
       const cur  = (curItem[key] || 0) + enhBonus;
       const next = item[key] || 0;
       const diff = next - cur;
@@ -669,6 +752,8 @@ function equip(player, itemQuery) {
   if (!itemId || !player.inventory.includes(itemId)) return "인벤토리에 그 아이템이 없습니다.";
   const item  = items[itemId];
   if (!EQUIPMENT_SLOTS.includes(item.type)) return "장착할 수 없는 아이템입니다.";
+  const equipCheck = canEquipItem(player, itemId);
+  if (!equipCheck.ok) return `장착 조건을 만족하지 못했습니다. ${equipCheck.reason}`;
   const oldId = player.equipment[item.type];
   player.equipment[item.type] = itemId;
   healToBounds(player);
@@ -727,7 +812,7 @@ function showSmith(player) {
     const lv = enh[slot] || 0;
     const slotName = { weapon: "무기", hat: "모자", top: "상의", bottom: "하의" }[slot];
     if (itemId) {
-      const nextCost = lv < ENHANCE_MAX ? ENHANCE_COST(lv) : "최대";
+      const nextCost = lv < ENHANCE_MAX ? enhanceCost(slot, itemId, lv) : "최대";
       lines.push(`${slotName}: ${items[itemId]?.name || itemId} +${lv}  (다음 강화: ${nextCost === "최대" ? "최대치" : nextCost + "G"})`);
     } else {
       lines.push(`${slotName}: 장착 없음`);
@@ -745,7 +830,7 @@ function smithEnhance(player, slot) {
   const enh = player.enhance;
   const lv = enh[slot] || 0;
   if (lv >= ENHANCE_MAX) return `이미 최대 강화 수치(+${ENHANCE_MAX})입니다.`;
-  const cost = ENHANCE_COST(lv);
+  const cost = enhanceCost(slot, itemId, lv);
   if (player.gold < cost) return `골드가 부족합니다. 필요: ${cost}G (보유: ${player.gold}G)`;
   player.gold -= cost;
   enh[slot] = lv + 1;
@@ -1077,6 +1162,240 @@ function doDungeonAction(db, player, userId, action) {
 
 // ── 선택지 빌더 ───────────────────────────────────────────────────────
 
+// Trade room system
+
+function tradeOffer() {
+  return { items: [], gold: 0, confirmed: false, final: false };
+}
+
+function activeTrade(db, player) {
+  return player.tradeId ? db.trades[player.tradeId] : null;
+}
+
+function tradeItemCounts(offer) {
+  const counts = {};
+  for (const id of offer.items || []) counts[id] = (counts[id] || 0) + 1;
+  return counts;
+}
+
+function availableTradeItemCounts(player, offer) {
+  const equipped = new Set(equippedItems(player));
+  const offered = tradeItemCounts(offer);
+  const counts = {};
+  for (const id of player.inventory) {
+    if (equipped.has(id)) continue;
+    counts[id] = (counts[id] || 0) + 1;
+  }
+  for (const [id, count] of Object.entries(offered)) counts[id] = Math.max(0, (counts[id] || 0) - count);
+  return counts;
+}
+
+function tradeMenuRootChoices() {
+  return [
+    { label: "거래방 만들기", command: "__trade_create" },
+    { label: "거래방 목록", command: "__trade_room_list" }
+  ];
+}
+
+function showTradeList(db) {
+  const open = Object.values(db.trades).filter((t) => t.members.length < 2);
+  if (!open.length) return { text: "[거래소]\n현재 열린 거래방이 없습니다.", choices: [] };
+  const lines = ["[거래소 - 방 목록]"];
+  const choices = [];
+  for (const trade of open) {
+    const leader = db.players[trade.leader];
+    const label = `거래방 #${trade.id} ${leader?.name || trade.leader} - ${trade.members.length}/2`;
+    lines.push(label);
+    choices.push({ label, command: `거래참가 ${trade.id}` });
+  }
+  return { text: lines.join("\n"), choices };
+}
+
+function formatTradeOffer(db, trade, memberId) {
+  const member = db.players[memberId];
+  const offer = trade.offers[memberId] || tradeOffer();
+  const counts = tradeItemCounts(offer);
+  const itemText = Object.entries(counts)
+    .map(([id, count]) => `${items[id]?.name || id}${count > 1 ? ` x${count}` : ""}`)
+    .join(", ") || "없음";
+  const state = offer.final ? "최종확정" : offer.confirmed ? "확인" : "조정중";
+  return `${member?.name || memberId}: 아이템 ${itemText} / 골드 ${offer.gold}G / ${state}`;
+}
+
+function showTradeRoom(db, player, userId, prefix) {
+  const trade = activeTrade(db, player);
+  if (!trade) { player.tradeId = null; return "참가 중인 거래방이 없습니다."; }
+  const lines = [];
+  if (prefix) lines.push(prefix, "");
+  lines.push(`[거래방 #${trade.id}]`);
+  lines.push(`인원: ${trade.members.length}/2`);
+  lines.push("");
+  for (const memberId of trade.members) lines.push(formatTradeOffer(db, trade, memberId));
+  if (trade.members.length < 2) lines.push("", "상대 플레이어를 기다리는 중입니다.");
+  return lines.join("\n");
+}
+
+function tradeMenuChoices(db, player, userId) {
+  const trade = activeTrade(db, player);
+  if (!trade) return tradeMenuRootChoices();
+  const offer = trade.offers[userId] || tradeOffer();
+  const choices = [{ label: "새로고침", command: "__trade_refresh" }];
+  if (!offer.confirmed) {
+    choices.push({ label: "아이템 올리기", command: "__trade_item_select" });
+    for (const step of GOLD_STEPS) choices.push({ label: `+${step}G`, command: `거래골드 ${step}` });
+    for (const step of GOLD_STEPS) choices.push({ label: `-${step}G`, command: `거래골드 -${step}` });
+    choices.push({ label: "확인", command: "거래확인" });
+  } else {
+    choices.push({ label: "확인취소", command: "거래확인취소" });
+    choices.push({ label: "최종교환", command: "최종교환" });
+  }
+  choices.push({ label: "나가기", command: "거래나가기" });
+  return choices;
+}
+
+function tradeItemChoices(db, player, userId) {
+  const trade = activeTrade(db, player);
+  const offer = trade?.offers[userId] || tradeOffer();
+  const counts = availableTradeItemCounts(player, offer);
+  return Object.entries(counts)
+    .filter(([, count]) => count > 0)
+    .map(([id, count]) => ({
+      label: `${items[id]?.name || id}${count > 1 ? ` x${count}` : ""}`,
+      command: `거래아이템 ${id}`
+    }));
+}
+
+function createTradeRoom(db, player, userId) {
+  if (player.tradeId) return showTradeRoom(db, player, userId, "이미 거래방에 참가 중입니다.");
+  if (player.partyId) return "파티 참가 중에는 거래방을 만들 수 없습니다.";
+  const id = String(db.nextTradeId++);
+  db.trades[id] = { id, leader: userId, members: [userId], offers: { [userId]: tradeOffer() } };
+  player.tradeId = id;
+  return showTradeRoom(db, player, userId, `거래방 #${id}을 만들었습니다.`);
+}
+
+function joinTradeRoom(db, player, userId, tradeId) {
+  if (player.tradeId) return showTradeRoom(db, player, userId, "이미 거래방에 참가 중입니다.");
+  if (player.partyId) return "파티 참가 중에는 거래방에 참가할 수 없습니다.";
+  const trade = db.trades[tradeId];
+  if (!trade) return "해당 거래방을 찾을 수 없습니다.";
+  if (trade.members.length >= 2) return "거래방이 이미 가득 찼습니다.";
+  trade.members.push(userId);
+  trade.offers[userId] = tradeOffer();
+  player.tradeId = trade.id;
+  return showTradeRoom(db, player, userId, `거래방 #${trade.id}에 입장했습니다.`);
+}
+
+function resetTradeConfirmations(trade) {
+  for (const offer of Object.values(trade.offers)) {
+    offer.confirmed = false;
+    offer.final = false;
+  }
+}
+
+function addTradeItem(db, player, userId, itemId) {
+  const trade = activeTrade(db, player);
+  if (!trade) return "참가 중인 거래방이 없습니다.";
+  const offer = trade.offers[userId];
+  if (offer.confirmed) return "확인한 상태에서는 거래창을 수정할 수 없습니다.";
+  const counts = availableTradeItemCounts(player, offer);
+  if (!counts[itemId]) return "올릴 수 있는 아이템이 없습니다.";
+  offer.items.push(itemId);
+  resetTradeConfirmations(trade);
+  return showTradeRoom(db, player, userId, `${items[itemId]?.name || itemId}을 거래창에 올렸습니다.`);
+}
+
+function adjustTradeGold(db, player, userId, amountText) {
+  const trade = activeTrade(db, player);
+  if (!trade) return "참가 중인 거래방이 없습니다.";
+  const offer = trade.offers[userId];
+  if (offer.confirmed) return "확인한 상태에서는 골드를 조정할 수 없습니다.";
+  const amount = Number(amountText);
+  if (!Number.isInteger(amount) || !GOLD_STEPS.includes(Math.abs(amount))) return "허용되지 않은 골드 조정 단위입니다.";
+  offer.gold = Math.max(0, Math.min(player.gold, offer.gold + amount));
+  resetTradeConfirmations(trade);
+  return showTradeRoom(db, player, userId, `거래 골드를 ${offer.gold}G로 조정했습니다.`);
+}
+
+function confirmTrade(db, player, userId) {
+  const trade = activeTrade(db, player);
+  if (!trade) return "참가 중인 거래방이 없습니다.";
+  if (trade.members.length < 2) return "상대 플레이어가 들어온 뒤 확인할 수 있습니다.";
+  trade.offers[userId].confirmed = true;
+  trade.offers[userId].final = false;
+  return showTradeRoom(db, player, userId, "거래 내용을 확인했습니다.");
+}
+
+function unconfirmTrade(db, player, userId) {
+  const trade = activeTrade(db, player);
+  if (!trade) return "참가 중인 거래방이 없습니다.";
+  trade.offers[userId].confirmed = false;
+  trade.offers[userId].final = false;
+  return showTradeRoom(db, player, userId, "확인을 취소했습니다.");
+}
+
+function validateTradeExecution(db, trade) {
+  if (trade.members.length !== 2) return "거래 인원이 부족합니다.";
+  for (const memberId of trade.members) {
+    const member = db.players[memberId];
+    const offer = trade.offers[memberId];
+    if (!member || !offer) return "거래 참여자 정보를 찾을 수 없습니다.";
+    if (!offer.confirmed || !offer.final) return "양쪽 모두 확인 및 최종교환을 눌러야 합니다.";
+    if (member.gold < offer.gold) return `${member.name}의 골드가 부족합니다.`;
+    const counts = availableTradeItemCounts(member, { items: [], gold: 0 });
+    for (const [id, count] of Object.entries(tradeItemCounts(offer))) {
+      if ((counts[id] || 0) < count) return `${member.name}의 ${items[id]?.name || id} 수량이 부족합니다.`;
+    }
+  }
+  return null;
+}
+
+function executeTrade(db, trade) {
+  const [aId, bId] = trade.members;
+  const a = db.players[aId];
+  const b = db.players[bId];
+  const ao = trade.offers[aId];
+  const bo = trade.offers[bId];
+  for (const id of ao.items) a.inventory.splice(a.inventory.indexOf(id), 1);
+  for (const id of bo.items) b.inventory.splice(b.inventory.indexOf(id), 1);
+  a.inventory.push(...bo.items);
+  b.inventory.push(...ao.items);
+  a.gold = a.gold - ao.gold + bo.gold;
+  b.gold = b.gold - bo.gold + ao.gold;
+  a.tradeId = null;
+  b.tradeId = null;
+  delete db.trades[trade.id];
+}
+
+function finalTrade(db, player, userId) {
+  const trade = activeTrade(db, player);
+  if (!trade) return "참가 중인 거래방이 없습니다.";
+  const offer = trade.offers[userId];
+  if (!offer.confirmed) return "먼저 확인을 눌러 거래창을 잠가야 합니다.";
+  offer.final = true;
+  const ready = trade.members.length === 2 && trade.members.every((id) => trade.offers[id]?.confirmed && trade.offers[id]?.final);
+  if (!ready) return showTradeRoom(db, player, userId, "최종교환을 눌렀습니다. 상대의 최종교환을 기다립니다.");
+  const error = validateTradeExecution(db, trade);
+  if (error) return showTradeRoom(db, player, userId, error);
+  executeTrade(db, trade);
+  return "거래가 완료되었습니다.";
+}
+
+function leaveTrade(db, player, userId) {
+  const trade = activeTrade(db, player);
+  if (!trade) { player.tradeId = null; return "참가 중인 거래방이 없습니다."; }
+  trade.members = trade.members.filter((id) => id !== userId);
+  delete trade.offers[userId];
+  player.tradeId = null;
+  if (!trade.members.length) {
+    delete db.trades[trade.id];
+  } else {
+    resetTradeConfirmations(trade);
+    if (trade.leader === userId) trade.leader = trade.members[0];
+  }
+  return "거래방에서 나갔습니다.";
+}
+
 function generalChoices() {
   return [
     { label: "상태",     command: "상태" },
@@ -1088,10 +1407,10 @@ function generalChoices() {
     { label: "스탯",     command: "__stat_menu" },
     { label: "전직",     command: "__job_menu" },
     { label: "던전",     command: "__dungeon_menu" },
-    { label: "대장간",   command: "__smith_menu" }
+    { label: "대장간",   command: "__smith_menu" },
+    { label: "거래소",   command: "__trade_menu" }
   ];
 }
-
 function statChoices() {
   return [
     { label: "힘 +1",   command: "스탯 힘 1" },
@@ -1166,7 +1485,7 @@ function shopBuyChoices(player) {
       const curItem = curId ? items[curId] : null;
       if (curItem && curId !== id) {
         const mainStat = (item.type === "weapon") ? "atk" : "def";
-        const enhBonus = (ENHANCE_BONUS[item.type]?.[mainStat] || 0) * (enh[item.type] || 0);
+        const enhBonus = (enhanceBonus(item.type, curId)?.[mainStat] || 0) * (enh[item.type] || 0);
         const diff     = (item[mainStat] || 0) - ((curItem[mainStat] || 0) + enhBonus);
         if (diff > 0)       compareStr = ` ▲+${diff}`;
         else if (diff < 0)  compareStr = ` ▼${diff}`;
@@ -1174,7 +1493,7 @@ function shopBuyChoices(player) {
       }
     }
 
-    const label = `${item.name} (${item.price}G)${affordMark}  ${statStr}${compareStr}`;
+    const label = `${item.name} (${item.price}G)${affordMark}  ${statStr}${compareStr}  ${itemRequirementText(item)}`;
     return { label, command: `구매 ${item.name}` };
   });
 }
@@ -1202,12 +1521,13 @@ function skillChoices(player) {
 function townChoices(player) {
   const town = towns[player.town];
   return [
-    ...town.connections.map((id) => ({ label: `${towns[id].name}으로 이동`, command: `이동 ${towns[id].name}` })),
+    ...town.connections.map((id) => ({ label: `${towns[id].name}로 이동`, command: `이동 ${towns[id].name}` })),
     { label: "사냥", command: "사냥" },
-    { label: "상점", command: "상점" }
+    { label: "상점", command: "상점" },
+    { label: "대장간", command: "__smith_menu" },
+    { label: "거래소", command: "__trade_menu" }
   ];
 }
-
 function inventoryChoices(player) {
   // 인벤토리 메인 탭 선택지 반환
   return [
@@ -1335,7 +1655,7 @@ function handleCommand(userId, rawText) {
     } else if (!command || command === "help") {
       reply = [
         "숫자로 모든 메뉴를 이용할 수 있습니다.",
-        "메뉴 → 상태, 사냥, 마을, 상점, 인벤토리, 휴식, 스탯, 전직, 던전, 대장간",
+        "메뉴 → 상태, 사냥, 마을, 상점, 인벤토리, 휴식, 스탯, 전직, 던전, 대장간, 거래소",
         "전투 → 1.공격 2.스킬 3.방어 4.도망",
         "파티방 → 1.준비(해제) 2.새로고침 3.나가기"
       ].join("\n");
@@ -1455,6 +1775,56 @@ function handleCommand(userId, rawText) {
       reply   = smithEnhance(player, arg1);
       choices = smithChoices();
       backCommand = "__smith_menu";
+    // ── 거래소 ──
+    } else if (command === "__trade_menu") {
+      reply   = player.tradeId ? showTradeRoom(db, player, userId, null) : "[거래소]\n거래방을 만들거나 열린 방에 참가하세요.";
+      choices = player.tradeId ? tradeMenuChoices(db, player, userId) : tradeMenuRootChoices();
+      backCommand = "__main_menu";
+    } else if (command === "__trade_create") {
+      reply   = createTradeRoom(db, player, userId);
+      choices = tradeMenuChoices(db, player, userId);
+      backCommand = "__trade_menu";
+    } else if (command === "__trade_room_list") {
+      const { text: listText, choices: roomChoices } = showTradeList(db);
+      reply   = listText;
+      choices = [...roomChoices, { label: "새로고침", command: "__trade_room_list" }];
+      backCommand = "__trade_menu";
+    } else if (command === "거래참가") {
+      reply   = joinTradeRoom(db, player, userId, arg1);
+      choices = tradeMenuChoices(db, player, userId);
+      backCommand = "__trade_menu";
+    } else if (command === "__trade_refresh") {
+      reply   = showTradeRoom(db, player, userId, null);
+      choices = tradeMenuChoices(db, player, userId);
+      backCommand = "__trade_menu";
+    } else if (command === "__trade_item_select") {
+      const itemChoices = tradeItemChoices(db, player, userId);
+      reply   = itemChoices.length ? "[거래 아이템 선택]\n거래창에 올릴 아이템을 선택하세요." : "거래창에 올릴 수 있는 아이템이 없습니다.";
+      choices = itemChoices.length ? itemChoices : tradeMenuChoices(db, player, userId);
+      backCommand = "__trade_menu";
+    } else if (command === "거래아이템") {
+      reply   = addTradeItem(db, player, userId, arg1);
+      choices = tradeMenuChoices(db, player, userId);
+      backCommand = "__trade_menu";
+    } else if (command === "거래골드") {
+      reply   = adjustTradeGold(db, player, userId, arg1);
+      choices = tradeMenuChoices(db, player, userId);
+      backCommand = "__trade_menu";
+    } else if (command === "거래확인") {
+      reply   = confirmTrade(db, player, userId);
+      choices = tradeMenuChoices(db, player, userId);
+      backCommand = "__trade_menu";
+    } else if (command === "거래확인취소") {
+      reply   = unconfirmTrade(db, player, userId);
+      choices = tradeMenuChoices(db, player, userId);
+      backCommand = "__trade_menu";
+    } else if (command === "최종교환") {
+      reply   = finalTrade(db, player, userId);
+      choices = player.tradeId ? tradeMenuChoices(db, player, userId) : generalChoices();
+      backCommand = player.tradeId ? "__trade_menu" : null;
+    } else if (command === "거래나가기") {
+      reply   = leaveTrade(db, player, userId);
+      choices = generalChoices();
     // ── 던전 ──
     } else if (command === "__dungeon_menu") {
       reply   = ["[던전]", "방을 만들거나, 열린 방에 참가하세요."].join("\n");
@@ -1511,12 +1881,15 @@ function handleCommand(userId, rawText) {
 
     // ── 기본 선택지 결정 ──
     const party = player.partyId ? db.parties[player.partyId] : null;
+    const trade = player.tradeId ? db.trades[player.tradeId] : null;
     if (db.battles[userId] && !choices.length) {
       choices = battleChoices();
     } else if (party?.started && !choices.length) {
       choices = dungeonBattleChoices();
     } else if (party && !choices.length) {
       choices = partyRoomChoices(party, userId);
+    } else if (trade && !choices.length) {
+      choices = tradeMenuChoices(db, player, userId);
     } else if (!choices.length) {
       choices = generalChoices();
     }
@@ -1533,3 +1906,5 @@ function handleCommand(userId, rawText) {
 }
 
 module.exports = { handleCommand };
+
+
