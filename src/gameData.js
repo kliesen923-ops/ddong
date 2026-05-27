@@ -41,28 +41,38 @@ const towns = {
     name: "시작의 마을",
     description: "초보 모험가들이 모이는 작은 마을입니다.",
     connections: ["forest", "mine"],
-    shop: ["rusty_sword", "wooden_staff", "cloth_armor", "leather_armor"],
+    shop: [
+      "rusty_sword",
+      "wooden_staff",
+      "training_dagger",
+      "cloth_hat",
+      "cloth_armor",
+      "cloth_pants",
+      "leather_cap",
+      "leather_armor",
+      "leather_pants"
+    ],
     huntingGround: "green_field"
   },
   forest: {
     name: "숲 마을",
     description: "깊은 숲 근처에 자리 잡은 사냥꾼의 마을입니다.",
     connections: ["start", "harbor"],
-    shop: ["hunter_bow", "iron_sword", "forest_armor"],
+    shop: ["hunter_bow", "iron_sword", "forest_hood", "forest_armor", "forest_pants"],
     huntingGround: "deep_forest"
   },
   mine: {
     name: "광산 마을",
     description: "광부와 대장장이가 모이는 거친 마을입니다.",
     connections: ["start"],
-    shop: ["iron_sword", "iron_armor"],
+    shop: ["iron_sword", "iron_helmet", "iron_armor", "iron_greaves"],
     huntingGround: "old_mine"
   },
   harbor: {
     name: "항구 마을",
     description: "먼 지역으로 떠나는 배가 정박하는 항구입니다.",
     connections: ["forest"],
-    shop: ["steel_sword", "mage_robe", "steel_armor"],
+    shop: ["steel_sword", "mage_hat", "mage_robe", "mage_pants", "steel_helmet", "steel_armor", "steel_greaves"],
     huntingGround: "pirate_cove"
   }
 };
@@ -70,15 +80,37 @@ const towns = {
 const items = {
   rusty_sword: { name: "녹슨 검", type: "weapon", price: 35, atk: 4 },
   wooden_staff: { name: "나무 지팡이", type: "weapon", price: 35, atk: 2, magic: 4 },
+  training_dagger: { name: "수련 단검", type: "weapon", price: 45, atk: 3, dex: 1 },
   hunter_bow: { name: "사냥꾼의 활", type: "weapon", price: 90, atk: 7, dex: 1 },
   iron_sword: { name: "철검", type: "weapon", price: 120, atk: 10 },
   steel_sword: { name: "강철검", type: "weapon", price: 260, atk: 18 },
-  cloth_armor: { name: "천 옷", type: "armor", price: 25, def: 2 },
-  leather_armor: { name: "가죽 갑옷", type: "armor", price: 60, def: 5 },
-  forest_armor: { name: "숲지기 갑옷", type: "armor", price: 125, def: 8, dex: 1 },
-  iron_armor: { name: "철 갑옷", type: "armor", price: 150, def: 11 },
-  mage_robe: { name: "마도사의 로브", type: "armor", price: 180, def: 5, magic: 5 },
-  steel_armor: { name: "강철 갑옷", type: "armor", price: 300, def: 18 }
+  cloth_hat: { name: "천 모자", type: "hat", price: 15, def: 1, set: "cloth" },
+  cloth_armor: { name: "천 상의", type: "top", price: 25, def: 2, set: "cloth" },
+  cloth_pants: { name: "천 하의", type: "bottom", price: 20, def: 1, set: "cloth" },
+  leather_cap: { name: "가죽 모자", type: "hat", price: 45, def: 2, dex: 1, set: "leather" },
+  leather_armor: { name: "가죽 상의", type: "top", price: 60, def: 5, set: "leather" },
+  leather_pants: { name: "가죽 하의", type: "bottom", price: 50, def: 3, set: "leather" },
+  forest_hood: { name: "숲지기 두건", type: "hat", price: 95, def: 3, dex: 1, set: "forest" },
+  forest_armor: { name: "숲지기 상의", type: "top", price: 125, def: 8, dex: 1, set: "forest" },
+  forest_pants: { name: "숲지기 하의", type: "bottom", price: 110, def: 5, dex: 1, set: "forest" },
+  iron_helmet: { name: "철 투구", type: "hat", price: 110, def: 5, set: "iron" },
+  iron_armor: { name: "철 상의", type: "top", price: 150, def: 11, set: "iron" },
+  iron_greaves: { name: "철 하의", type: "bottom", price: 130, def: 7, set: "iron" },
+  mage_hat: { name: "마도사의 모자", type: "hat", price: 140, def: 2, magic: 3, int: 1, set: "mage" },
+  mage_robe: { name: "마도사의 상의", type: "top", price: 180, def: 5, magic: 5, set: "mage" },
+  mage_pants: { name: "마도사의 하의", type: "bottom", price: 150, def: 3, magic: 2, set: "mage" },
+  steel_helmet: { name: "강철 투구", type: "hat", price: 220, def: 8, set: "steel" },
+  steel_armor: { name: "강철 상의", type: "top", price: 300, def: 18, set: "steel" },
+  steel_greaves: { name: "강철 하의", type: "bottom", price: 260, def: 12, set: "steel" }
+};
+
+const setBonuses = {
+  cloth: { name: "수습자 세트", pieces: ["cloth_hat", "cloth_armor", "cloth_pants"], bonus: { def: 2, vit: 1 } },
+  leather: { name: "가죽 세트", pieces: ["leather_cap", "leather_armor", "leather_pants"], bonus: { def: 3, dex: 1 } },
+  forest: { name: "숲지기 세트", pieces: ["forest_hood", "forest_armor", "forest_pants"], bonus: { atk: 2, dex: 2 } },
+  iron: { name: "철갑 세트", pieces: ["iron_helmet", "iron_armor", "iron_greaves"], bonus: { def: 6, vit: 2 } },
+  mage: { name: "마도사 세트", pieces: ["mage_hat", "mage_robe", "mage_pants"], bonus: { magic: 5, int: 2 } },
+  steel: { name: "강철 세트", pieces: ["steel_helmet", "steel_armor", "steel_greaves"], bonus: { def: 9, str: 2, vit: 1 } }
 };
 
 const huntingGrounds = {
@@ -120,4 +152,4 @@ const dungeons = {
   }
 };
 
-module.exports = { jobs, towns, items, huntingGrounds, monsters, dungeons };
+module.exports = { jobs, towns, items, setBonuses, huntingGrounds, monsters, dungeons };

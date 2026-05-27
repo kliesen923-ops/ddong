@@ -1,9 +1,10 @@
 const fs = require("fs");
 const path = require("path");
-const { jobs, towns, items, huntingGrounds, monsters, dungeons } = require("./gameData");
+const { jobs, towns, items, setBonuses, huntingGrounds, monsters, dungeons } = require("./gameData");
 
 const DB_DIR = path.join(__dirname, "..", "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
+const EQUIPMENT_SLOTS = ["weapon", "hat", "top", "bottom"];
 
 function loadDb() {
   if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
@@ -30,15 +31,28 @@ function createPlayer(userId) {
     hp: 999,
     mp: 999,
     town: "start",
-    inventory: ["rusty_sword", "cloth_armor"],
-    equipment: { weapon: "rusty_sword", armor: "cloth_armor" },
+    inventory: ["rusty_sword", "cloth_hat", "cloth_armor", "cloth_pants"],
+    equipment: { weapon: "rusty_sword", hat: "cloth_hat", top: "cloth_armor", bottom: "cloth_pants" },
     partyId: null
   };
 }
 
 function getPlayer(db, userId) {
   if (!db.players[userId]) db.players[userId] = createPlayer(userId);
+  normalizePlayer(db.players[userId]);
   return db.players[userId];
+}
+
+function normalizePlayer(player) {
+  player.inventory ||= [];
+  player.equipment ||= {};
+  if (player.equipment.armor && !player.equipment.top) {
+    player.equipment.top = player.equipment.armor;
+  }
+  delete player.equipment.armor;
+  for (const slot of EQUIPMENT_SLOTS) {
+    if (!player.equipment[slot]) player.equipment[slot] = null;
+  }
 }
 
 function expToNext(level) {
@@ -49,14 +63,37 @@ function itemStats(itemId) {
   return items[itemId] || {};
 }
 
+function addStats(target, source) {
+  for (const key of ["str", "dex", "int", "vit", "atk", "def", "magic"]) {
+    target[key] = (target[key] || 0) + (source[key] || 0);
+  }
+  return target;
+}
+
+function equippedItems(player) {
+  normalizePlayer(player);
+  return EQUIPMENT_SLOTS.map((slot) => player.equipment[slot]).filter(Boolean);
+}
+
+function activeSetBonuses(player) {
+  const equipped = new Set(equippedItems(player));
+  return Object.values(setBonuses).filter((set) => set.pieces.every((id) => equipped.has(id)));
+}
+
+function equipmentStats(player) {
+  const total = {};
+  for (const itemId of equippedItems(player)) addStats(total, itemStats(itemId));
+  for (const set of activeSetBonuses(player)) addStats(total, set.bonus);
+  return total;
+}
+
 function calcStats(player) {
   const job = jobs[player.job];
-  const weapon = itemStats(player.equipment.weapon);
-  const armor = itemStats(player.equipment.armor);
-  const str = player.stats.str + (job.statBonus.str || 0) + (weapon.str || 0) + (armor.str || 0);
-  const dex = player.stats.dex + (job.statBonus.dex || 0) + (weapon.dex || 0) + (armor.dex || 0);
-  const int = player.stats.int + (job.statBonus.int || 0) + (weapon.int || 0) + (armor.int || 0);
-  const vit = player.stats.vit + (job.statBonus.vit || 0) + (weapon.vit || 0) + (armor.vit || 0);
+  const gear = equipmentStats(player);
+  const str = player.stats.str + (job.statBonus.str || 0) + (gear.str || 0);
+  const dex = player.stats.dex + (job.statBonus.dex || 0) + (gear.dex || 0);
+  const int = player.stats.int + (job.statBonus.int || 0) + (gear.int || 0);
+  const vit = player.stats.vit + (job.statBonus.vit || 0) + (gear.vit || 0);
   const maxHp = 80 + vit * 8 + player.level * job.hpPerLevel;
   const maxMp = 20 + int * 4 + player.level * job.mpPerLevel;
   return {
@@ -66,8 +103,8 @@ function calcStats(player) {
     vit,
     maxHp,
     maxMp,
-    atk: 4 + str * 2 + dex + (weapon.atk || 0) + (weapon.magic || 0),
-    def: Math.floor(vit * 1.4) + (armor.def || 0)
+    atk: 4 + str * 2 + dex + (gear.atk || 0) + (gear.magic || 0),
+    def: Math.floor(vit * 1.4) + (gear.def || 0)
   };
 }
 
@@ -125,6 +162,10 @@ function addRewards(player, exp, gold) {
 function status(player) {
   healToBounds(player);
   const s = calcStats(player);
+  const activeSets = activeSetBonuses(player);
+  const setLines = activeSets.length
+    ? ["", "세트 효과", ...activeSets.map((set) => `${set.name}: ${formatStats(set.bonus)}`)]
+    : [];
   return [
     `[${jobs[player.job].name} Lv.${player.level}]`,
     `위치: ${towns[player.town].name}`,
@@ -136,7 +177,10 @@ function status(player) {
     "",
     "장비",
     `무기: ${items[player.equipment.weapon]?.name || "없음"}`,
-    `방어구: ${items[player.equipment.armor]?.name || "없음"}`
+    `모자: ${items[player.equipment.hat]?.name || "없음"}`,
+    `상의: ${items[player.equipment.top]?.name || "없음"}`,
+    `하의: ${items[player.equipment.bottom]?.name || "없음"}`,
+    ...setLines
   ].join("\n");
 }
 
@@ -153,13 +197,43 @@ function help() {
   ].join("\n");
 }
 
-function appendChoices(text, choices) {
+function formatStats(stats) {
+  return [
+    stats.atk ? `공격+${stats.atk}` : "",
+    stats.def ? `방어+${stats.def}` : "",
+    stats.magic ? `마력+${stats.magic}` : "",
+    stats.str ? `힘+${stats.str}` : "",
+    stats.dex ? `민첩+${stats.dex}` : "",
+    stats.int ? `지능+${stats.int}` : "",
+    stats.vit ? `체력+${stats.vit}` : ""
+  ].filter(Boolean).join(" / ");
+}
+
+function visibleChoices(player, choices) {
+  if (choices.length <= 6) {
+    player.choicePage = 0;
+    return choices.map((choice, index) => ({ number: index + 1, ...choice }));
+  }
+  const pageSize = 4;
+  const maxPage = Math.max(0, Math.ceil(choices.length / pageSize) - 1);
+  player.choicePage = Math.min(Math.max(player.choicePage || 0, 0), maxPage);
+  const start = player.choicePage * pageSize;
+  return [
+    ...choices.slice(start, start + pageSize).map((choice, index) => ({ number: index + 1, ...choice })),
+    { number: 5, label: "이전", command: "__prev_choices" },
+    { number: 6, label: "다음", command: "__next_choices" }
+  ];
+}
+
+function appendChoices(player, text, choices) {
   if (!choices.length) return text;
+  const visible = visibleChoices(player, choices);
+  const pageText = choices.length > 6 ? ` (${player.choicePage + 1}/${Math.ceil(choices.length / 4)})` : "";
   return [
     text,
     "",
-    "[선택]",
-    ...choices.map((choice, index) => `${index + 1}. ${choice.label}`)
+    `[선택${pageText}]`,
+    ...visible.map((choice) => `${choice.number}. ${choice.label}`)
   ].join("\n");
 }
 
@@ -220,15 +294,32 @@ function inventoryChoices(player) {
     .filter((id) => {
       if (seen.has(id)) return false;
       seen.add(id);
-      return ["weapon", "armor"].includes(items[id]?.type);
+      return EQUIPMENT_SLOTS.includes(items[id]?.type);
     })
     .map((id) => ({ label: `${items[id].name} 장착`, command: `장착 ${items[id].name}` }));
 }
 
 function resolveNumberChoice(db, player, userId, text) {
   if (!/^\d+$/.test(text)) return text;
-  const index = Number(text) - 1;
-  if (player.choices?.[index]?.command) return player.choices[index].command;
+  const number = Number(text);
+  const index = number - 1;
+  if (player.choices?.length > 6) {
+    const pageSize = 4;
+    const maxPage = Math.max(0, Math.ceil(player.choices.length / pageSize) - 1);
+    player.choicePage = Math.min(Math.max(player.choicePage || 0, 0), maxPage);
+    if (number >= 1 && number <= 4) {
+      return player.choices[player.choicePage * pageSize + index]?.command || text;
+    }
+    if (number === 5) {
+      player.choicePage = Math.max(0, player.choicePage - 1);
+      return "__show_choices";
+    }
+    if (number === 6) {
+      player.choicePage = Math.min(maxPage, player.choicePage + 1);
+      return "__show_choices";
+    }
+  }
+  if (player.choices?.length) return player.choices[index]?.command || text;
   if (db.battles[userId]) return battleChoices()[index]?.command || text;
   const party = player.partyId ? db.parties[player.partyId] : null;
   if (party?.started) return dungeonBattleChoices()[index]?.command || text;
@@ -364,11 +455,10 @@ function showShop(player) {
     `[${town.name} 상점]`,
     ...town.shop.map((id) => {
       const item = items[id];
-      const stats = [`가격 ${item.price}G`, item.atk ? `공격+${item.atk}` : "", item.def ? `방어+${item.def}` : "", item.magic ? `마력+${item.magic}` : ""].filter(Boolean);
-      return `${item.name} - ${stats.join(" / ")}`;
+      return `${item.name} - 가격 ${item.price}G${formatStats(item) ? ` / ${formatStats(item)}` : ""}`;
     }),
     "",
-    "구매 [아이템명]으로 구매합니다."
+    "번호 또는 구매 [아이템명]으로 구매합니다."
   ].join("\n");
 }
 
@@ -394,7 +484,7 @@ function equip(player, itemQuery) {
   const itemId = findItemId(itemQuery);
   if (!itemId || !player.inventory.includes(itemId)) return "인벤토리에 그 아이템이 없습니다.";
   const item = items[itemId];
-  if (!["weapon", "armor"].includes(item.type)) return "장착할 수 없는 아이템입니다.";
+  if (!EQUIPMENT_SLOTS.includes(item.type)) return "장착할 수 없는 아이템입니다.";
   player.equipment[item.type] = itemId;
   healToBounds(player);
   return `${item.name}을 장착했습니다.\n\n${status(player)}`;
@@ -560,9 +650,12 @@ function handleCommand(userId, rawText) {
   let choices = [];
 
   try {
-    const dungeonReply = doDungeonAction(db, player, userId, command);
+    const dungeonReply = command === "__show_choices" ? null : doDungeonAction(db, player, userId, command);
     if (dungeonReply) {
       reply = dungeonReply;
+    } else if (command === "__show_choices") {
+      reply = "선택지를 이동했습니다.";
+      choices = player.choices || generalChoices();
     } else if (!command || command === "도움" || command === "도움말" || command === "help") {
       reply = help();
     } else if (command === "상태") {
@@ -584,11 +677,13 @@ function handleCommand(userId, rawText) {
       choices = shopChoices(player);
     } else if (command === "구매") {
       reply = buyItem(player, restText);
+      choices = shopChoices(player);
     } else if (command === "인벤토리" || command === "가방") {
       reply = inventory(player);
       choices = inventoryChoices(player);
     } else if (command === "장착") {
       reply = equip(player, restText);
+      choices = inventoryChoices(player);
     } else if (command === "스탯") {
       reply = addStat(player, arg1, arg2);
     } else if (command === "전직") {
@@ -599,6 +694,8 @@ function handleCommand(userId, rawText) {
       reply = joinDungeonParty(db, player, userId, arg1);
     } else if (command === "준비") {
       reply = readyDungeon(db, player, userId);
+    } else if (/^\d+$/.test(command)) {
+      reply = "선택지에 없는 번호입니다.";
     } else {
       reply = `알 수 없는 명령어입니다.\n\n${help()}`;
     }
@@ -613,8 +710,9 @@ function handleCommand(userId, rawText) {
     } else if (!choices.length) {
       choices = generalChoices();
     }
+    if (command !== "__show_choices") player.choicePage = 0;
     player.choices = choices;
-    reply = appendChoices(reply, choices);
+    reply = appendChoices(player, reply, choices);
   } finally {
     saveDb(db);
   }
