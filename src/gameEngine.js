@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { jobs, skills, towns, items, setBonuses, huntingGrounds, monsters, dungeons } = require("./gameData");
+const { jobs, skills, towns, items, setBonuses, huntingGrounds, monsters, dungeons, jobUniqueWeapons } = require("./gameData");
 
 const DB_DIR = path.join(__dirname, "..", "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
@@ -156,6 +156,27 @@ function addRewards(player, exp, gold) {
     }
   }
 
+  return lines;
+}
+
+function rollDrops(player, drops = []) {
+  const lines = [];
+  for (const drop of drops) {
+    if (Math.random() <= drop.chance) {
+      player.inventory.push(drop.item);
+      lines.push(`${items[drop.item]?.name || drop.item}을 획득했습니다.`);
+    }
+  }
+  return lines;
+}
+
+function rollBossDrops(player, boss) {
+  const lines = rollDrops(player, boss.drops || []);
+  const weaponId = jobUniqueWeapons[player.job] || jobUniqueWeapons.novice;
+  if (weaponId && Math.random() <= (boss.uniqueWeaponChance || 0)) {
+    player.inventory.push(weaponId);
+    lines.push(`${items[weaponId].name}을 획득했습니다.`);
+  }
   return lines;
 }
 
@@ -487,6 +508,7 @@ function doBattleTurn(db, player, userId, action) {
   if (battle.monsterHp <= 0) {
     lines.push(`${monster.name}을 처치했습니다.`);
     lines.push(...addRewards(player, monster.exp, monster.gold));
+    lines.push(...rollDrops(player, monster.drops));
     delete db.battles[userId];
     return lines.join("\n");
   }
@@ -756,7 +778,7 @@ function doDungeonAction(db, player, userId, action) {
     for (const memberId of party.members) {
       const member = db.players[memberId];
       if (!member) continue;
-      lines.push(`${member.name}: ${addRewards(member, rewardExp, rewardGold).join(" ")}`);
+      lines.push(`${member.name}: ${[...addRewards(member, rewardExp, rewardGold), ...rollBossDrops(member, boss)].join(" ")}`);
       member.partyId = null;
     }
     delete db.parties[party.id];

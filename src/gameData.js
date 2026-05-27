@@ -111,6 +111,11 @@ const items = {
   hunter_bow: { name: "사냥꾼의 활", type: "weapon", price: 90, atk: 7, dex: 1 },
   iron_sword: { name: "철검", type: "weapon", price: 120, atk: 10 },
   steel_sword: { name: "강철검", type: "weapon", price: 260, atk: 18 },
+  novice_relic_blade: { name: "모험가의 유산검", type: "weapon", price: 420, atk: 22, vit: 1 },
+  warrior_kingslayer: { name: "왕살해자의 대검", type: "weapon", price: 520, atk: 30, str: 3 },
+  mage_soul_staff: { name: "혼령의 지팡이", type: "weapon", price: 520, atk: 8, magic: 24, int: 3 },
+  archer_goblin_piercer: { name: "고블린 관통궁", type: "weapon", price: 520, atk: 24, dex: 3 },
+  rogue_shadow_fang: { name: "그림자 송곳니", type: "weapon", price: 520, atk: 25, dex: 2, str: 1 },
   cloth_hat: { name: "천 모자", type: "hat", price: 15, def: 1, set: "cloth" },
   cloth_armor: { name: "천 상의", type: "top", price: 25, def: 2, set: "cloth" },
   cloth_pants: { name: "천 하의", type: "bottom", price: 20, def: 1, set: "cloth" },
@@ -129,6 +134,16 @@ const items = {
   steel_helmet: { name: "강철 투구", type: "hat", price: 220, def: 8, set: "steel" },
   steel_armor: { name: "강철 상의", type: "top", price: 300, def: 18, set: "steel" },
   steel_greaves: { name: "강철 하의", type: "bottom", price: 260, def: 12, set: "steel" }
+  ,
+  slime_jelly: { name: "슬라임 젤리", type: "junk", price: 4 },
+  wolf_pelt: { name: "늑대 가죽", type: "junk", price: 8 },
+  spider_silk: { name: "거미줄", type: "junk", price: 14 },
+  orc_badge: { name: "오크 휘장", type: "junk", price: 22 },
+  bat_wing: { name: "박쥐 날개", type: "junk", price: 12 },
+  golem_core: { name: "금 간 골렘 핵", type: "junk", price: 30 },
+  pirate_coin: { name: "해적 은화", type: "junk", price: 38 },
+  witch_pearl: { name: "마녀의 진주", type: "junk", price: 52 },
+  goblin_crown_piece: { name: "깨진 고블린 왕관 조각", type: "junk", price: 65 }
 };
 
 const setBonuses = {
@@ -160,14 +175,22 @@ const huntingGrounds = {
 };
 
 const monsters = {
-  slime: { name: "슬라임", level: 1, hp: 28, atk: 6, def: 1, exp: 18, gold: 12 },
-  wild_wolf: { name: "야생 늑대", level: 3, hp: 45, atk: 10, def: 2, exp: 35, gold: 20 },
-  forest_spider: { name: "숲 거미", level: 5, hp: 70, atk: 14, def: 4, exp: 60, gold: 35 },
-  orc_scout: { name: "오크 정찰병", level: 7, hp: 95, atk: 19, def: 6, exp: 85, gold: 55 },
-  cave_bat: { name: "동굴 박쥐", level: 4, hp: 58, atk: 13, def: 3, exp: 48, gold: 28 },
-  mine_golem: { name: "광산 골렘", level: 8, hp: 130, atk: 21, def: 10, exp: 110, gold: 70 },
-  pirate: { name: "해적", level: 10, hp: 150, atk: 27, def: 9, exp: 150, gold: 105 },
-  sea_witch: { name: "바다 마녀", level: 12, hp: 170, atk: 31, def: 8, exp: 190, gold: 130 }
+  slime: { name: "슬라임", level: 1, hp: 28, atk: 6, def: 1, exp: 18, gold: 12, drops: [{ item: "slime_jelly", chance: 1 }, { item: "cloth_hat", chance: 0.08 }] },
+  wild_wolf: { name: "야생 늑대", level: 3, hp: 45, atk: 10, def: 2, exp: 35, gold: 20, drops: [{ item: "wolf_pelt", chance: 1 }, { item: "leather_cap", chance: 0.08 }, { item: "training_dagger", chance: 0.04 }] },
+  forest_spider: { name: "숲 거미", level: 5, hp: 70, atk: 14, def: 4, exp: 60, gold: 35, drops: [{ item: "spider_silk", chance: 1 }, { item: "forest_hood", chance: 0.07 }, { item: "forest_pants", chance: 0.05 }] },
+  orc_scout: { name: "오크 정찰병", level: 7, hp: 95, atk: 19, def: 6, exp: 85, gold: 55, drops: [{ item: "orc_badge", chance: 1 }, { item: "iron_sword", chance: 0.06 }, { item: "iron_helmet", chance: 0.05 }] },
+  cave_bat: { name: "동굴 박쥐", level: 4, hp: 58, atk: 13, def: 3, exp: 48, gold: 28, drops: [{ item: "bat_wing", chance: 1 }, { item: "leather_pants", chance: 0.08 }] },
+  mine_golem: { name: "광산 골렘", level: 8, hp: 130, atk: 21, def: 10, exp: 110, gold: 70, drops: [{ item: "golem_core", chance: 1 }, { item: "iron_armor", chance: 0.07 }, { item: "iron_greaves", chance: 0.06 }] },
+  pirate: { name: "해적", level: 10, hp: 150, atk: 27, def: 9, exp: 150, gold: 105, drops: [{ item: "pirate_coin", chance: 1 }, { item: "steel_sword", chance: 0.05 }, { item: "steel_greaves", chance: 0.04 }] },
+  sea_witch: { name: "바다 마녀", level: 12, hp: 170, atk: 31, def: 8, exp: 190, gold: 130, drops: [{ item: "witch_pearl", chance: 1 }, { item: "mage_hat", chance: 0.06 }, { item: "mage_robe", chance: 0.05 }] }
+};
+
+const jobUniqueWeapons = {
+  novice: "novice_relic_blade",
+  warrior: "warrior_kingslayer",
+  mage: "mage_soul_staff",
+  archer: "archer_goblin_piercer",
+  rogue: "rogue_shadow_fang"
 };
 
 const dungeons = {
@@ -175,8 +198,18 @@ const dungeons = {
     name: "고블린 동굴",
     minLevel: 3,
     maxPlayers: 4,
-    boss: { name: "고블린 왕", level: 8, hp: 420, atk: 22, def: 7, exp: 160, gold: 100 }
+    boss: {
+      name: "고블린 왕",
+      level: 8,
+      hp: 420,
+      atk: 22,
+      def: 7,
+      exp: 160,
+      gold: 100,
+      drops: [{ item: "goblin_crown_piece", chance: 1 }],
+      uniqueWeaponChance: 0.2
+    }
   }
 };
 
-module.exports = { jobs, skills, towns, items, setBonuses, huntingGrounds, monsters, dungeons };
+module.exports = { jobs, skills, towns, items, setBonuses, huntingGrounds, monsters, dungeons, jobUniqueWeapons };
