@@ -547,20 +547,126 @@ function sellItem(player, itemQuery) {
 }
 
 function inventory(player) {
+  const equip  = player.inventory.filter((id) =>  EQUIPMENT_SLOTS.includes(items[id]?.type)).length;
+  const junk   = player.inventory.filter((id) => !EQUIPMENT_SLOTS.includes(items[id]?.type)).length;
+  return [`[인벤토리]  총 ${player.inventory.length}개 (장비 ${equip} / 재료 ${junk})`, "항목을 선택하세요."].join("\n");
+}
+
+// ── 인벤토리 탭: 장비 목록 ──────────────────────────────────────────────
+function showInventoryEquip(player) {
+  const enh       = player.enhance || {};
+  const slotNames = { weapon: "무기", hat: "모자", top: "상의", bottom: "하의" };
+  const seen      = new Map();
+  for (const id of player.inventory) {
+    if (EQUIPMENT_SLOTS.includes(items[id]?.type)) seen.set(id, (seen.get(id) || 0) + 1);
+  }
+  if (!seen.size) return { text: "[장비 목록]\n보유한 장비가 없습니다.", choices: [] };
+
+  const lines   = ["[장비 목록]  ★=현재 장착"];
+  const choices = [];
+  for (const slot of EQUIPMENT_SLOTS) {
+    const slotItems = [...seen.entries()].filter(([id]) => items[id]?.type === slot);
+    if (!slotItems.length) continue;
+    lines.push(`▸ ${slotNames[slot]}`);
+    for (const [id, cnt] of slotItems) {
+      const item       = items[id];
+      const isEquipped = player.equipment[slot] === id;
+      const enhLv      = isEquipped ? (enh[slot] || 0) : 0;
+      const enhStr     = enhLv > 0 ? ` +${enhLv}` : "";
+      const cntStr     = cnt > 1 ? ` x${cnt}` : "";
+      const statStr    = formatStats(item);
+      const mark       = isEquipped ? "★" : "　";
+      lines.push(`  ${mark} ${item.name}${enhStr}${cntStr}  ${statStr}`);
+      if (!isEquipped) {
+        choices.push({ label: `${item.name} 장착`, command: `__inv_compare ${id}` });
+      }
+    }
+  }
+  return { text: lines.join("\n"), choices };
+}
+
+// ── 인벤토리 탭: 재료/기타 ─────────────────────────────────────────────
+function showInventoryJunk(player) {
   const counts = {};
-  for (const id of player.inventory) counts[id] = (counts[id] || 0) + 1;
-  const lines = Object.entries(counts).map(([id, cnt]) => `${items[id]?.name || id}${cnt > 1 ? ` x${cnt}` : ""}`);
-  return [`[인벤토리]`, ...(lines.length ? lines : ["비어 있습니다."])].join("\n");
+  for (const id of player.inventory) {
+    if (!EQUIPMENT_SLOTS.includes(items[id]?.type)) counts[id] = (counts[id] || 0) + 1;
+  }
+  if (!Object.keys(counts).length) return { text: "[재료/기타]\n보유한 재료가 없습니다.", choices: [] };
+
+  const lines   = ["[재료/기타]  선택 → 1개 판매"];
+  const choices = [];
+  for (const [id, cnt] of Object.entries(counts)) {
+    const item = items[id];
+    const sp   = sellPrice(id);
+    lines.push(`  ${item?.name || id} x${cnt}  (${sp}G/개, 합계 ${sp * cnt}G)`);
+    choices.push({ label: `${item?.name || id} 판매 (${sp}G)`, command: `인벤판매 ${id}` });
+  }
+  return { text: lines.join("\n"), choices };
+}
+
+// ── 장착 전 비교 화면 ─────────────────────────────────────────────────
+function showItemCompare(player, itemId) {
+  if (!itemId || !items[itemId]) return "아이템 정보를 찾을 수 없습니다.";
+  const item      = items[itemId];
+  if (!EQUIPMENT_SLOTS.includes(item.type)) return "장착 불가능한 아이템입니다.";
+  const slotNames = { weapon: "무기", hat: "모자", top: "상의", bottom: "하의" };
+  const currentId = player.equipment[item.type];
+  const curItem   = currentId ? items[currentId] : null;
+  const enhLv     = (player.enhance || {})[item.type] || 0;
+  const statLabels = { atk: "공격", def: "방어", magic: "마력", str: "힘", dex: "민첩", int: "지능", vit: "체력" };
+
+  const lines = [`[장착 비교 - ${slotNames[item.type]}]`, ""];
+  if (curItem) {
+    const enhStr = enhLv > 0 ? ` +${enhLv}` : "";
+    lines.push(`현재: ${curItem.name}${enhStr}`);
+    const cs = formatStats(curItem);
+    if (cs) lines.push(`  ${cs}`);
+  } else {
+    lines.push("현재: 없음");
+  }
+  lines.push("");
+  lines.push(`새 장비: ${item.name}`);
+  const ns = formatStats(item);
+  if (ns) lines.push(`  ${ns}`);
+
+  if (curItem) {
+    const diffs = [];
+    for (const key of ["atk", "def", "magic", "str", "dex", "int", "vit"]) {
+      const enhBonus = (ENHANCE_BONUS[item.type]?.[key] || 0) * enhLv;
+      const cur  = (curItem[key] || 0) + enhBonus;
+      const next = item[key] || 0;
+      const diff = next - cur;
+      if (diff !== 0) diffs.push(`${statLabels[key]} ${diff > 0 ? "▲+" : "▼"}${diff}`);
+    }
+    lines.push("");
+    lines.push(diffs.length ? `변화: ${diffs.join("  ")}` : "변화: 동일한 스탯");
+    if (enhLv > 0) lines.push(`⚠ 슬롯 강화 +${enhLv}은 새 장비에도 유지됩니다.`);
+  }
+  return lines.join("\n");
+}
+
+// ── 인벤토리에서 재료 직접 판매 ───────────────────────────────────────
+function sellFromInventory(player, itemId) {
+  if (!player.inventory.includes(itemId)) return "인벤토리에 그 아이템이 없습니다.";
+  if (EQUIPMENT_SLOTS.includes(items[itemId]?.type)) return "장비 아이템은 상점에서 판매하세요.";
+  player.inventory.splice(player.inventory.indexOf(itemId), 1);
+  const earned = sellPrice(itemId);
+  player.gold += earned;
+  return `[${items[itemId]?.name || itemId}] 판매 완료. +${earned}G  소지금: ${player.gold}G`;
 }
 
 function equip(player, itemQuery) {
   const itemId = findItemId(itemQuery);
   if (!itemId || !player.inventory.includes(itemId)) return "인벤토리에 그 아이템이 없습니다.";
-  const item = items[itemId];
+  const item  = items[itemId];
   if (!EQUIPMENT_SLOTS.includes(item.type)) return "장착할 수 없는 아이템입니다.";
+  const oldId = player.equipment[item.type];
   player.equipment[item.type] = itemId;
   healToBounds(player);
-  return `${item.name}${objectParticle(item.name)} 장착했습니다.\n\n${status(player)}`;
+  const lines = [`${item.name}${objectParticle(item.name)} 장착했습니다.`];
+  if (oldId && oldId !== itemId) lines.push(`기존 [${items[oldId]?.name || oldId}]이 인벤토리로 이동했습니다.`);
+  lines.push("", status(player));
+  return lines.join("\n");
 }
 
 function addStat(player, statName, amountText) {
@@ -1073,14 +1179,11 @@ function townChoices(player) {
 }
 
 function inventoryChoices(player) {
-  const seen = new Set();
-  return player.inventory
-    .filter((id) => {
-      if (seen.has(id)) return false;
-      seen.add(id);
-      return EQUIPMENT_SLOTS.includes(items[id]?.type);
-    })
-    .map((id) => ({ label: `${items[id].name} 장착`, command: `장착 ${items[id].name}` }));
+  // 인벤토리 메인 탭 선택지 반환
+  return [
+    { label: "장비 목록", command: "__inv_equip" },
+    { label: "재료/기타", command: "__inv_junk" }
+  ];
 }
 
 // ── 선택지 페이징 ─────────────────────────────────────────────────────
@@ -1264,10 +1367,34 @@ function handleCommand(userId, rawText) {
       reply   = inventory(player);
       choices = inventoryChoices(player);
       backCommand = "__main_menu";
+    } else if (command === "__inv_equip") {
+      const { text, choices: eq } = showInventoryEquip(player);
+      reply   = text;
+      choices = eq;
+      backCommand = "인벤토리";
+    } else if (command === "__inv_junk") {
+      const { text, choices: jk } = showInventoryJunk(player);
+      reply   = text;
+      choices = jk;
+      backCommand = "인벤토리";
+    } else if (command === "__inv_compare") {
+      reply   = showItemCompare(player, arg1);
+      choices = [
+        { label: "장착하기", command: `장착 ${arg1}` },
+        { label: "취소",     command: "__inv_equip" }
+      ];
+      backCommand = "__inv_equip";
+    } else if (command === "인벤판매") {
+      reply = sellFromInventory(player, arg1);
+      const { text: jt, choices: jk } = showInventoryJunk(player);
+      reply  += "\n\n" + jt;
+      choices = jk;
+      backCommand = "__inv_junk";
     } else if (command === "장착") {
       reply   = equip(player, restText);
-      choices = inventoryChoices(player);
-      backCommand = "__main_menu";
+      const { choices: eq } = showInventoryEquip(player);
+      choices = eq;
+      backCommand = "__inv_equip";
     // ── 스탯 ──
     } else if (command === "__stat_menu") {
       reply   = [`[스탯]`, `남은 포인트: ${player.statPoints}`, "올릴 능력치를 선택하세요."].join("\n");
