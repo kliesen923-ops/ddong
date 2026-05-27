@@ -36,6 +36,33 @@ const jobs = {
   }
 };
 
+const skills = {
+  novice: [
+    { id: "power_strike", name: "강타", level: 1, mpCost: 8, multiplier: 1.55 },
+    { id: "focus_hit", name: "집중타", level: 3, mpCost: 12, multiplier: 1.9 }
+  ],
+  warrior: [
+    { id: "power_strike", name: "강타", level: 1, mpCost: 8, multiplier: 1.55 },
+    { id: "cleave", name: "가르기", level: 5, mpCost: 14, multiplier: 2.05 },
+    { id: "heavy_crash", name: "중격", level: 8, mpCost: 20, multiplier: 2.65 }
+  ],
+  mage: [
+    { id: "magic_bolt", name: "마력탄", level: 1, mpCost: 8, multiplier: 1.65 },
+    { id: "fireball", name: "화염구", level: 5, mpCost: 16, multiplier: 2.25 },
+    { id: "arcane_lance", name: "비전창", level: 8, mpCost: 24, multiplier: 2.9 }
+  ],
+  archer: [
+    { id: "aimed_shot", name: "조준 사격", level: 1, mpCost: 8, multiplier: 1.6 },
+    { id: "double_shot", name: "연속 사격", level: 5, mpCost: 15, multiplier: 2.15 },
+    { id: "piercing_arrow", name: "관통 화살", level: 8, mpCost: 22, multiplier: 2.75 }
+  ],
+  rogue: [
+    { id: "quick_stab", name: "기습", level: 1, mpCost: 8, multiplier: 1.6 },
+    { id: "shadow_cut", name: "그림자 베기", level: 5, mpCost: 15, multiplier: 2.2 },
+    { id: "assassinate", name: "암살", level: 8, mpCost: 24, multiplier: 3.0 }
+  ]
+};
+
 const towns = {
   start: {
     name: "시작의 마을",
@@ -152,4 +179,4 @@ const dungeons = {
   }
 };
 
-module.exports = { jobs, towns, items, setBonuses, huntingGrounds, monsters, dungeons };
+module.exports = { jobs, skills, towns, items, setBonuses, huntingGrounds, monsters, dungeons };
