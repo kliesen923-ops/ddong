@@ -59,11 +59,11 @@ function createPlayer(userId) {
 
 function getPlayer(db, userId) {
   if (!db.players[userId]) db.players[userId] = createPlayer(userId);
-  normalizePlayer(db.players[userId]);
+  normalizePlayer(db.players[userId], db);
   return db.players[userId];
 }
 
-function normalizePlayer(p) {
+function normalizePlayer(p, db = null) {
   p.inventory ||= [];
   p.equipment ||= {};
   if (p.equipment.armor && !p.equipment.top) { p.equipment.top = p.equipment.armor; }
@@ -72,6 +72,15 @@ function normalizePlayer(p) {
   p.enhance ||= { weapon: 0, hat: 0, top: 0, bottom: 0 };
   for (const slot of EQUIPMENT_SLOTS) { p.enhance[slot] ||= 0; }
   p.tradeId ||= null;
+  if (db) {
+    const trade = p.tradeId ? db.trades?.[p.tradeId] : null;
+    if (p.tradeId && (!trade || !trade.members?.includes(p.userId))) p.tradeId = null;
+    if (!p.tradeId && isTradeRoomChoiceContext(p)) {
+      p.choices = [];
+      p.choiceBackCommand = null;
+      p.choicePage = 0;
+    }
+  }
 }
 
 // ── 직업 트리 ──────────────────────────────────────────────────────────
@@ -138,7 +147,7 @@ function itemRequirementText(item) {
   if (item.reqJob?.length) {
     parts.push(item.reqJob.map((id) => jobs[id]?.name || id).join("/"));
   }
-  return parts.length ? `조건: ${parts.join(" / ")}` : "조건: 없음";
+  return parts.length ? `장착 조건: ${parts.join(" / ")}` : "장착 조건: 없음";
 }
 
 function canEquipItem(player, itemId) {
@@ -231,6 +240,12 @@ function statBar(current, max, length = 10) {
   const ratio = Math.max(0, Math.min(1, max > 0 ? current / max : 0));
   const filled = Math.round(ratio * length);
   return "█".repeat(filled) + "░".repeat(length - filled);
+}
+
+function combatStatusLines(label, hp, maxHp, mp = null, maxMp = null) {
+  const lines = [label, `HP [${statBar(hp, maxHp)}] ${hp}/${maxHp}`];
+  if (mp !== null && maxMp !== null) lines.push(`MP [${statBar(mp, maxMp)}] ${mp}/${maxMp}`);
+  return lines;
 }
 
 function objectParticle(name) {
@@ -463,8 +478,8 @@ function startHunt(db, player, userId) {
     `${ground.name}에서 ${monster.name}${objectParticle(monster.name)} 만났습니다.`,
     "",
     `[전투 1턴]`,
-    `나    HP [${statBar(player.hp, s.maxHp)}] ${player.hp}/${s.maxHp}  MP [${statBar(player.mp, s.maxMp)}] ${player.mp}/${s.maxMp}`,
-    `${monster.name} HP [${statBar(monster.hp, monster.hp)}] ${monster.hp}/${monster.hp}`,
+    ...combatStatusLines("나", player.hp, s.maxHp, player.mp, s.maxMp),
+    ...combatStatusLines(monster.name, monster.hp, monster.hp),
     "",
     "행동을 선택하세요."
   ].join("\n");
@@ -496,8 +511,8 @@ function doBattleTurn(db, player, userId, action) {
       return lines.join("\n");
     }
     battle.turn += 1;
-    lines.push("", `나    HP [${statBar(player.hp, s.maxHp)}] ${player.hp}/${s.maxHp}  MP [${statBar(player.mp, s.maxMp)}] ${player.mp}/${s.maxMp}`);
-    lines.push(`${monster.name} HP [${statBar(Math.max(0, battle.monsterHp), monster.hp)}] ${Math.max(0, battle.monsterHp)}/${monster.hp}`);
+    lines.push("", ...combatStatusLines("나", player.hp, s.maxHp, player.mp, s.maxMp));
+    lines.push(...combatStatusLines(monster.name, Math.max(0, battle.monsterHp), monster.hp));
     lines.push("다음 행동을 선택하세요.");
     return lines.join("\n");
   } else if (actionName === "스킬사용") {
@@ -505,6 +520,8 @@ function doBattleTurn(db, player, userId, action) {
     if (!skill) return "사용할 수 없는 스킬입니다.";
     if (player.mp < skill.mpCost) return `MP가 부족합니다. 필요 MP: ${skill.mpCost}`;
     player.mp -= skill.mpCost;
+    const afterSkillStats = calcStats(player);
+    lines.push(`MP -${skill.mpCost} (${player.mp}/${afterSkillStats.maxMp})`);
     const result = applySkillSolo(player, battle, skill);
     lines.push(...result.lines);
     stun = result.stun;
@@ -541,8 +558,9 @@ function doBattleTurn(db, player, userId, action) {
   }
 
   battle.turn += 1;
-  lines.push("", `나    HP [${statBar(player.hp, s.maxHp)}] ${player.hp}/${s.maxHp}  MP [${statBar(player.mp, s.maxMp)}] ${player.mp}/${s.maxMp}`);
-  lines.push(`${monster.name} HP [${statBar(Math.max(0, battle.monsterHp), monster.hp)}] ${Math.max(0, battle.monsterHp)}/${monster.hp}`);
+  const latestStats = calcStats(player);
+  lines.push("", ...combatStatusLines("나", player.hp, latestStats.maxHp, player.mp, latestStats.maxMp));
+  lines.push(...combatStatusLines(monster.name, Math.max(0, battle.monsterHp), monster.hp));
   lines.push("다음 행동을 선택하세요.");
   return lines.join("\n");
 }
@@ -592,7 +610,8 @@ function showShopBuy(player) {
     if (id) {
       const enhStr  = (enh[slot] || 0) > 0 ? ` +${enh[slot]}` : "";
       const statStr = formatStats(items[id]);
-      lines.push(`${slotNames[slot]}: ${items[id].name}${enhStr}  ${statStr}`);
+      lines.push(`${slotNames[slot]}: ${items[id].name}${enhStr}`);
+      lines.push(`  능력치: ${statStr || "없음"}`);
     } else {
       lines.push(`${slotNames[slot]}: 없음`);
     }
@@ -1041,6 +1060,7 @@ function doDungeonAction(db, player, userId, action) {
         continue;
       }
       member.mp -= skill.mpCost;
+      lines.push(`${member.name}: MP -${skill.mpCost} (${member.mp}/${calcStats(member).maxMp})`);
 
       // 스킬 타입에 따른 처리
       const ms = calcStats(member);
@@ -1169,7 +1189,18 @@ function tradeOffer() {
 }
 
 function activeTrade(db, player) {
-  return player.tradeId ? db.trades[player.tradeId] : null;
+  if (!player.tradeId) return null;
+  const trade = db.trades[player.tradeId];
+  if (!trade || !trade.members?.includes(player.userId)) {
+    player.tradeId = null;
+    if (isTradeRoomChoiceContext(player)) {
+      player.choices = [];
+      player.choiceBackCommand = null;
+      player.choicePage = 0;
+    }
+    return null;
+  }
+  return trade;
 }
 
 function tradeItemCounts(offer) {
@@ -1251,6 +1282,70 @@ function tradeMenuChoices(db, player, userId) {
   }
   choices.push({ label: "나가기", command: "거래나가기" });
   return choices;
+}
+
+function isTradeChoiceCommand(command) {
+  const value = String(command || "");
+  return (
+    value === "__trade_menu" ||
+    value === "__trade_create" ||
+    value === "__trade_room_list" ||
+    value === "__trade_refresh" ||
+    value === "__trade_item_select" ||
+    value === "거래확인" ||
+    value === "거래확인취소" ||
+    value === "최종교환" ||
+    value === "거래나가기" ||
+    value.startsWith("거래참가 ") ||
+    value.startsWith("거래아이템 ") ||
+    value.startsWith("거래골드 ")
+  );
+}
+
+function isTradeChoiceContext(player) {
+  return Boolean(player.choices?.length) && player.choices.every((choice) => isTradeChoiceCommand(choice.command));
+}
+
+function isTradeRoomChoiceCommand(command) {
+  const value = String(command || "");
+  return (
+    value === "__trade_refresh" ||
+    value === "__trade_item_select" ||
+    value === "거래확인" ||
+    value === "거래확인취소" ||
+    value === "최종교환" ||
+    value === "거래나가기" ||
+    value.startsWith("거래아이템 ") ||
+    value.startsWith("거래골드 ")
+  );
+}
+
+function isTradeRoomChoiceContext(player) {
+  return Boolean(player.choices?.length) && player.choices.every((choice) => isTradeRoomChoiceCommand(choice.command));
+}
+
+function isSkillChoiceContext(player) {
+  return Boolean(player.choices?.length) && player.choices.every((choice) => (
+    String(choice.command || "").startsWith("스킬사용 ") ||
+    choice.command === "__battle_menu"
+  ));
+}
+
+function resolveVisibleChoice(player, number, fallback) {
+  const command = visibleChoices(player, player.choices || []).find((c) => c.number === number)?.command;
+  if (command === "__prev_choices") {
+    player.choicePage = Math.max(0, (player.choicePage || 0) - 1);
+    return "__show_choices";
+  }
+  if (command === "__next_choices") {
+    const hasBack = Boolean(player.choiceBackCommand);
+    const fpi = hasBack ? 4 : 5;
+    const mpi = hasBack ? 3 : 4;
+    const maxPage = Math.max(0, Math.ceil(((player.choices || []).length - fpi) / mpi));
+    player.choicePage = Math.min(maxPage, (player.choicePage || 0) + 1);
+    return "__show_choices";
+  }
+  return command || fallback;
 }
 
 function tradeItemChoices(db, player, userId) {
@@ -1476,7 +1571,7 @@ function shopBuyChoices(player) {
     const item       = items[id];
     const canAfford  = player.gold >= item.price;
     const statStr    = formatStats(item);
-    const affordMark = canAfford ? "" : " ✗";
+    const affordMark = canAfford ? "" : " (골드 부족)";
 
     // 같은 슬롯 현재 장비와 주요 스탯 비교
     let compareStr = "";
@@ -1487,13 +1582,17 @@ function shopBuyChoices(player) {
         const mainStat = (item.type === "weapon") ? "atk" : "def";
         const enhBonus = (enhanceBonus(item.type, curId)?.[mainStat] || 0) * (enh[item.type] || 0);
         const diff     = (item[mainStat] || 0) - ((curItem[mainStat] || 0) + enhBonus);
-        if (diff > 0)       compareStr = ` ▲+${diff}`;
-        else if (diff < 0)  compareStr = ` ▼${diff}`;
-        else                compareStr = " →동일";
+        if (diff > 0)       compareStr = `▲+${diff}`;
+        else if (diff < 0)  compareStr = `▼${diff}`;
+        else                compareStr = "동일";
       }
     }
 
-    const label = `${item.name} (${item.price}G)${affordMark}  ${statStr}${compareStr}  ${itemRequirementText(item)}`;
+    const label = [
+      `${item.name} (${item.price}G)${affordMark}`,
+      `  능력치: ${statStr || "없음"}${compareStr ? ` / 현재 장비 대비 ${compareStr}` : ""}`,
+      `  ${itemRequirementText(item)}`
+    ].join("\n");
     return { label, command: `구매 ${item.name}` };
   });
 }
@@ -1590,32 +1689,28 @@ function resolveNumberChoice(db, player, userId, text) {
 
   // 전투/파티 상태는 항상 최우선 (다른 플레이어의 행동으로 상태가 바뀌었을 수 있음)
   if (db.battles[userId]) {
+    if (isSkillChoiceContext(player)) return resolveVisibleChoice(player, number, text);
     return battleChoices()[index]?.command || text;
   }
   const party = player.partyId ? db.parties[player.partyId] : null;
   if (party?.started) {
+    if (isSkillChoiceContext(player)) return resolveVisibleChoice(player, number, text);
     return dungeonBattleChoices()[index]?.command || text;
   }
   if (party && !party.started) {
     return partyRoomChoices(party, userId)[index]?.command || text;
   }
+  const trade = player.tradeId ? db.trades[player.tradeId] : null;
+  if (trade && !isTradeChoiceContext(player)) {
+    player.choices = tradeMenuChoices(db, player, userId);
+    player.choiceBackCommand = null;
+    player.choicePage = 0;
+    return visibleChoices(player, player.choices).find((c) => c.number === number)?.command || text;
+  }
 
   // 메뉴 선택지 (페이징 포함)
   if (player.choices?.length) {
-    const command = visibleChoices(player, player.choices).find((c) => c.number === number)?.command;
-    if (command === "__prev_choices") {
-      player.choicePage = Math.max(0, (player.choicePage || 0) - 1);
-      return "__show_choices";
-    }
-    if (command === "__next_choices") {
-      const hasBack = Boolean(player.choiceBackCommand);
-      const fpi = hasBack ? 4 : 5;
-      const mpi = hasBack ? 3 : 4;
-      const maxPage = Math.max(0, Math.ceil((player.choices.length - fpi) / mpi));
-      player.choicePage = Math.min(maxPage, (player.choicePage || 0) + 1);
-      return "__show_choices";
-    }
-    return command || text;
+    return resolveVisibleChoice(player, number, text);
   }
 
   return generalChoices()[index]?.command || text;
@@ -1645,9 +1740,26 @@ function handleCommand(userId, rawText) {
     if (dungeonReply) {
       reply = dungeonReply;
     } else if (command === "__show_choices") {
-      reply = "선택지를 이동했습니다.";
       choices     = player.choices || generalChoices();
       backCommand = player.choiceBackCommand || null;
+      const trade = activeTrade(db, player);
+      if (trade && !isTradeChoiceContext(player)) {
+        reply = showTradeRoom(db, player, userId, "거래방 선택지로 돌아왔습니다.");
+        choices = tradeMenuChoices(db, player, userId);
+        backCommand = null;
+      } else if (trade && choices.some((choice) => String(choice.command || "").startsWith("거래아이템 "))) {
+        reply = "[거래 아이템 선택]\n거래창에 올릴 아이템을 선택하세요.";
+      } else if (trade && isTradeChoiceContext(player)) {
+        reply = showTradeRoom(db, player, userId, null);
+      } else if (isSkillChoiceContext(player)) {
+        reply = "사용할 스킬을 선택하세요.";
+      } else if (choices.some((choice) => String(choice.command || "").startsWith("구매 "))) {
+        reply = showShopBuy(player);
+      } else if (choices.some((choice) => String(choice.command || "").startsWith("판매 "))) {
+        reply = showShopSell(player);
+      } else {
+        reply = "선택지를 이동했습니다.";
+      }
     // ── 메인 메뉴 ──
     } else if (command === "__main_menu") {
       reply   = "메인 메뉴입니다.";
@@ -1713,6 +1825,10 @@ function handleCommand(userId, rawText) {
       if (!choices.length) choices = [{ label: "판매 가능한 아이템 없음", command: "__show_choices" }];
       backCommand = "__shop_menu";
     // ── 인벤토리 ──
+    } else if (activeTrade(db, player) && isTradeChoiceContext(player) && (command === "인벤토리" || command === "가방" || command.startsWith("__inv_") || command === "인벤판매" || command === "장착")) {
+      reply   = showTradeRoom(db, player, userId, "거래방 안에서는 거래소의 '아이템 올리기' 메뉴를 사용하세요.");
+      choices = tradeMenuChoices(db, player, userId);
+      backCommand = null;
     } else if (command === "인벤토리" || command === "가방") {
       reply   = inventory(player);
       choices = inventoryChoices(player);
@@ -1720,13 +1836,13 @@ function handleCommand(userId, rawText) {
     } else if (command === "__inv_equip") {
       const { text, choices: eq } = showInventoryEquip(player);
       reply   = text;
-      choices = eq;
-      backCommand = "인벤토리";
+      choices = eq.length ? eq : [{ label: "돌아가기", command: "인벤토리" }];
+      backCommand = eq.length ? "인벤토리" : null;
     } else if (command === "__inv_junk") {
       const { text, choices: jk } = showInventoryJunk(player);
       reply   = text;
-      choices = jk;
-      backCommand = "인벤토리";
+      choices = jk.length ? jk : [{ label: "돌아가기", command: "인벤토리" }];
+      backCommand = jk.length ? "인벤토리" : null;
     } else if (command === "__inv_compare") {
       reply   = showItemCompare(player, arg1);
       choices = [
@@ -1738,13 +1854,13 @@ function handleCommand(userId, rawText) {
       reply = sellFromInventory(player, arg1);
       const { text: jt, choices: jk } = showInventoryJunk(player);
       reply  += "\n\n" + jt;
-      choices = jk;
-      backCommand = "__inv_junk";
+      choices = jk.length ? jk : [{ label: "돌아가기", command: "인벤토리" }];
+      backCommand = jk.length ? "__inv_junk" : null;
     } else if (command === "장착") {
       reply   = equip(player, restText);
       const { choices: eq } = showInventoryEquip(player);
-      choices = eq;
-      backCommand = "__inv_equip";
+      choices = eq.length ? eq : [{ label: "돌아가기", command: "인벤토리" }];
+      backCommand = eq.length ? "__inv_equip" : null;
     // ── 스탯 ──
     } else if (command === "__stat_menu") {
       reply   = [`[스탯]`, `남은 포인트: ${player.statPoints}`, "올릴 능력치를 선택하세요."].join("\n");
@@ -1779,11 +1895,11 @@ function handleCommand(userId, rawText) {
     } else if (command === "__trade_menu") {
       reply   = player.tradeId ? showTradeRoom(db, player, userId, null) : "[거래소]\n거래방을 만들거나 열린 방에 참가하세요.";
       choices = player.tradeId ? tradeMenuChoices(db, player, userId) : tradeMenuRootChoices();
-      backCommand = "__main_menu";
+      backCommand = player.tradeId ? null : "__main_menu";
     } else if (command === "__trade_create") {
       reply   = createTradeRoom(db, player, userId);
       choices = tradeMenuChoices(db, player, userId);
-      backCommand = "__trade_menu";
+      backCommand = null;
     } else if (command === "__trade_room_list") {
       const { text: listText, choices: roomChoices } = showTradeList(db);
       reply   = listText;
@@ -1792,36 +1908,36 @@ function handleCommand(userId, rawText) {
     } else if (command === "거래참가") {
       reply   = joinTradeRoom(db, player, userId, arg1);
       choices = tradeMenuChoices(db, player, userId);
-      backCommand = "__trade_menu";
+      backCommand = null;
     } else if (command === "__trade_refresh") {
       reply   = showTradeRoom(db, player, userId, null);
       choices = tradeMenuChoices(db, player, userId);
-      backCommand = "__trade_menu";
+      backCommand = null;
     } else if (command === "__trade_item_select") {
       const itemChoices = tradeItemChoices(db, player, userId);
       reply   = itemChoices.length ? "[거래 아이템 선택]\n거래창에 올릴 아이템을 선택하세요." : "거래창에 올릴 수 있는 아이템이 없습니다.";
       choices = itemChoices.length ? itemChoices : tradeMenuChoices(db, player, userId);
-      backCommand = "__trade_menu";
+      backCommand = itemChoices.length ? "__trade_menu" : null;
     } else if (command === "거래아이템") {
       reply   = addTradeItem(db, player, userId, arg1);
       choices = tradeMenuChoices(db, player, userId);
-      backCommand = "__trade_menu";
+      backCommand = null;
     } else if (command === "거래골드") {
       reply   = adjustTradeGold(db, player, userId, arg1);
       choices = tradeMenuChoices(db, player, userId);
-      backCommand = "__trade_menu";
+      backCommand = null;
     } else if (command === "거래확인") {
       reply   = confirmTrade(db, player, userId);
       choices = tradeMenuChoices(db, player, userId);
-      backCommand = "__trade_menu";
+      backCommand = null;
     } else if (command === "거래확인취소") {
       reply   = unconfirmTrade(db, player, userId);
       choices = tradeMenuChoices(db, player, userId);
-      backCommand = "__trade_menu";
+      backCommand = null;
     } else if (command === "최종교환") {
       reply   = finalTrade(db, player, userId);
       choices = player.tradeId ? tradeMenuChoices(db, player, userId) : generalChoices();
-      backCommand = player.tradeId ? "__trade_menu" : null;
+      backCommand = null;
     } else if (command === "거래나가기") {
       reply   = leaveTrade(db, player, userId);
       choices = generalChoices();
@@ -1881,15 +1997,12 @@ function handleCommand(userId, rawText) {
 
     // ── 기본 선택지 결정 ──
     const party = player.partyId ? db.parties[player.partyId] : null;
-    const trade = player.tradeId ? db.trades[player.tradeId] : null;
     if (db.battles[userId] && !choices.length) {
       choices = battleChoices();
     } else if (party?.started && !choices.length) {
       choices = dungeonBattleChoices();
     } else if (party && !choices.length) {
       choices = partyRoomChoices(party, userId);
-    } else if (trade && !choices.length) {
-      choices = tradeMenuChoices(db, player, userId);
     } else if (!choices.length) {
       choices = generalChoices();
     }
