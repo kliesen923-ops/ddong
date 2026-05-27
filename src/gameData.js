@@ -133,8 +133,7 @@ const items = {
   mage_pants: { name: "마도사의 하의", type: "bottom", price: 150, def: 3, magic: 2, set: "mage" },
   steel_helmet: { name: "강철 투구", type: "hat", price: 220, def: 8, set: "steel" },
   steel_armor: { name: "강철 상의", type: "top", price: 300, def: 18, set: "steel" },
-  steel_greaves: { name: "강철 하의", type: "bottom", price: 260, def: 12, set: "steel" }
-  ,
+  steel_greaves: { name: "강철 하의", type: "bottom", price: 260, def: 12, set: "steel" },
   slime_jelly: { name: "슬라임 젤리", type: "junk", price: 4 },
   wolf_pelt: { name: "늑대 가죽", type: "junk", price: 8 },
   spider_silk: { name: "거미줄", type: "junk", price: 14 },

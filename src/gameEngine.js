@@ -103,7 +103,7 @@ function calcStats(player) {
     vit,
     maxHp,
     maxMp,
-    atk: 4 + str * 2 + dex + (gear.atk || 0) + (gear.magic || 0),
+    atk: 4 + str * 2 + dex + (gear.atk || 0) + (player.job === "mage" ? (gear.magic || 0) : 0),
     def: Math.floor(vit * 1.4) + (gear.def || 0)
   };
 }
@@ -138,10 +138,17 @@ function pickRandom(list) {
   return list[Math.floor(Math.random() * list.length)];
 }
 
+// 텍스트 기반 스탯 게이지 바 (길이 10칸)
+function statBar(current, max, length = 10) {
+  const ratio = Math.max(0, Math.min(1, max > 0 ? current / max : 0));
+  const filled = Math.round(ratio * length);
+  return "█".repeat(filled) + "░".repeat(length - filled);
+}
+
 function addRewards(player, exp, gold) {
-  const lines = [`경험치 ${exp}, 골드 ${gold}을 획득했습니다.`];
   player.exp += exp;
   player.gold += gold;
+  const lines = [`EXP +${exp}  골드 +${gold}G`];
 
   while (player.exp >= expToNext(player.level)) {
     player.exp -= expToNext(player.level);
@@ -150,11 +157,15 @@ function addRewards(player, exp, gold) {
     const stats = calcStats(player);
     player.hp = stats.maxHp;
     player.mp = stats.maxMp;
-    lines.push(`레벨이 ${player.level}이 되었습니다. 스탯 포인트 3을 얻었습니다.`);
+    lines.push(`★ Lv.${player.level} 달성! 스탯 포인트 +3`);
     if (player.level === 5 && player.job === "novice") {
-      lines.push("전직이 가능합니다. 전직 전사 / 전직 마법사 / 전직 궁수 / 전직 도적");
+      lines.push("전직이 가능합니다! 전직 전사 / 전직 마법사 / 전직 궁수 / 전직 도적");
     }
   }
+
+  const needed = expToNext(player.level);
+  const pct = Math.floor((player.exp / needed) * 100);
+  lines.push(`EXP [${statBar(player.exp, needed)}] ${pct}% (${player.exp}/${needed})`);
 
   return lines;
 }
@@ -164,7 +175,8 @@ function rollDrops(player, drops = []) {
   for (const drop of drops) {
     if (Math.random() <= drop.chance) {
       player.inventory.push(drop.item);
-      lines.push(`${items[drop.item]?.name || drop.item}을 획득했습니다.`);
+      const dropName = items[drop.item]?.name || drop.item;
+      lines.push(`${dropName}${objectParticle(dropName)} 획득했습니다.`);
     }
   }
   return lines;
@@ -175,7 +187,8 @@ function rollBossDrops(player, boss) {
   const weaponId = jobUniqueWeapons[player.job] || jobUniqueWeapons.novice;
   if (weaponId && Math.random() <= (boss.uniqueWeaponChance || 0)) {
     player.inventory.push(weaponId);
-    lines.push(`${items[weaponId].name}을 획득했습니다.`);
+    const weaponName = items[weaponId].name;
+    lines.push(`${weaponName}${objectParticle(weaponName)} 획득했습니다.`);
   }
   return lines;
 }
@@ -442,12 +455,13 @@ function startHunt(db, player, userId) {
   const monster = { ...monsters[monsterId], id: monsterId };
   db.battles[userId] = { type: "solo", monster, monsterHp: monster.hp, turn: 1 };
 
+  const s = calcStats(player);
   return [
     `${ground.name}에서 ${monster.name}${objectParticle(monster.name)} 만났습니다.`,
     "",
     `[전투 1턴]`,
-    `나 HP ${player.hp}/${calcStats(player).maxHp}`,
-    `${monster.name} HP ${monster.hp}/${monster.hp}`,
+    `나    HP [${statBar(player.hp, s.maxHp)}] ${player.hp}/${s.maxHp}  MP [${statBar(player.mp, s.maxMp)}] ${player.mp}/${s.maxMp}`,
+    `${monster.name} HP [${statBar(monster.hp, monster.hp)}] ${monster.hp}/${monster.hp}`,
     "",
     "행동을 선택하세요."
   ].join("\n");
@@ -477,16 +491,17 @@ function doBattleTurn(db, player, userId, action) {
   const lines = [`[전투 ${battle.turn}턴 결과]`];
   const [actionName, actionArg] = String(action || "").split(/\s+/);
 
+  // 도망·방어·스킬·공격을 단일 if-else 체인으로 처리
+  // (도망 실패 시 else 분기로 빠지는 버그 수정)
+  let guarding = false;
   if (actionName === "도망") {
     if (Math.random() < 0.65) {
       delete db.battles[userId];
       return "도망쳤습니다. 전투가 종료되었습니다.";
     }
     lines.push("도망에 실패했습니다.");
-  }
-
-  let guarding = false;
-  if (actionName === "방어") {
+    // 공격 없이 몬스터 반격으로 진행
+  } else if (actionName === "방어") {
     guarding = true;
     lines.push("방어 태세를 취했습니다.");
   } else if (actionName === "스킬사용") {
@@ -496,7 +511,7 @@ function doBattleTurn(db, player, userId, action) {
     player.mp -= skill.mpCost;
     const dmg = Math.max(1, playerDamage(player, skill.multiplier) - monster.def);
     battle.monsterHp -= dmg;
-    lines.push(`${skill.name}을 사용해 ${monster.name}에게 ${dmg} 피해를 입혔습니다.`);
+    lines.push(`${skill.name}${objectParticle(skill.name)} 사용해 ${monster.name}에게 ${dmg} 피해를 입혔습니다.`);
   } else if (actionName === "공격") {
     const dmg = Math.max(1, playerDamage(player) - monster.def);
     battle.monsterHp -= dmg;
@@ -506,7 +521,7 @@ function doBattleTurn(db, player, userId, action) {
   }
 
   if (battle.monsterHp <= 0) {
-    lines.push(`${monster.name}을 처치했습니다.`);
+    lines.push(`${monster.name}${objectParticle(monster.name)} 처치했습니다.`);
     lines.push(...addRewards(player, monster.exp, monster.gold));
     lines.push(...rollDrops(player, monster.drops));
     delete db.battles[userId];
@@ -526,9 +541,10 @@ function doBattleTurn(db, player, userId, action) {
   }
 
   battle.turn += 1;
+  const s = calcStats(player);  // calcStats 한 번만 호출
   lines.push("");
-  lines.push(`나 HP ${player.hp}/${calcStats(player).maxHp} / MP ${player.mp}/${calcStats(player).maxMp}`);
-  lines.push(`${monster.name} HP ${Math.max(0, battle.monsterHp)}/${monster.hp}`);
+  lines.push(`나    HP [${statBar(player.hp, s.maxHp)}] ${player.hp}/${s.maxHp}  MP [${statBar(player.mp, s.maxMp)}] ${player.mp}/${s.maxMp}`);
+  lines.push(`${monster.name} HP [${statBar(Math.max(0, battle.monsterHp), monster.hp)}] ${Math.max(0, battle.monsterHp)}/${monster.hp}`);
   lines.push("다음 행동을 선택하세요.");
   return lines.join("\n");
 }
@@ -597,7 +613,7 @@ function buyItem(player, itemQuery) {
   if (player.gold < item.price) return `골드가 부족합니다. 필요 골드: ${item.price}`;
   player.gold -= item.price;
   player.inventory.push(itemId);
-  return `${item.name}을 구매했습니다. 남은 골드: ${player.gold}`;
+  return `${item.name}${objectParticle(item.name)} 구매했습니다. 남은 골드: ${player.gold}G`;
 }
 
 function sellPrice(itemId) {
@@ -611,13 +627,13 @@ function sellItem(player, itemQuery) {
   const index = player.inventory.indexOf(itemId);
   player.inventory.splice(index, 1);
   player.gold += sellPrice(itemId);
-  return `${items[itemId].name}을 판매했습니다. 소지금: ${player.gold}G`;
+  return `${items[itemId].name}${objectParticle(items[itemId].name)} 판매했습니다. 소지금: ${player.gold}G`;
 }
 
 function inventory(player) {
   const counts = {};
   for (const itemId of player.inventory) counts[itemId] = (counts[itemId] || 0) + 1;
-  const lines = Object.entries(counts).map(([id, count]) => `${items[id].name}${count > 1 ? ` x${count}` : ""}`);
+  const lines = Object.entries(counts).map(([id, count]) => `${items[id]?.name || id}${count > 1 ? ` x${count}` : ""}`);
   return [`[인벤토리]`, ...(lines.length ? lines : ["비어 있습니다."]), "", "장착 [아이템명]으로 장착합니다."].join("\n");
 }
 
@@ -628,7 +644,7 @@ function equip(player, itemQuery) {
   if (!EQUIPMENT_SLOTS.includes(item.type)) return "장착할 수 없는 아이템입니다.";
   player.equipment[item.type] = itemId;
   healToBounds(player);
-  return `${item.name}을 장착했습니다.\n\n${status(player)}`;
+  return `${item.name}${objectParticle(item.name)} 장착했습니다.\n\n${status(player)}`;
 }
 
 function addStat(player, statName, amountText) {
@@ -726,9 +742,10 @@ function readyDungeon(db, player, userId) {
   const readyCount = party.members.filter((id) => party.ready[id]).length;
   if (readyCount < party.members.length) return `준비 완료. 현재 준비: ${readyCount}/${party.members.length}`;
   party.started = true;
+  const startBoss = dungeons[party.dungeonId].boss;
   return [
     `${dungeons[party.dungeonId].name} 보스전이 시작됩니다.`,
-    `보스: ${dungeons[party.dungeonId].boss.name} HP ${party.bossHp}`,
+    `보스: ${startBoss.name} HP [${statBar(party.bossHp, startBoss.hp)}] ${party.bossHp}/${startBoss.hp}`,
     "각자 행동을 선택하세요."
   ].join("\n");
 }
@@ -750,7 +767,7 @@ function doDungeonAction(db, player, userId, action) {
   for (const memberId of party.members) {
     const member = db.players[memberId];
     if (!member || member.hp <= 0) continue;
-    const memberAction = typeof party.actions[memberId] === "string" ? { type: party.actions[memberId] } : party.actions[memberId];
+    const memberAction = party.actions[memberId]; // 항상 객체로 저장됨
     if (memberAction.type === "방어") {
       lines.push(`${member.name}은 방어 태세를 취했습니다.`);
       continue;
@@ -761,7 +778,7 @@ function doDungeonAction(db, player, userId, action) {
       if (skill && member.mp >= skill.mpCost) {
         member.mp -= skill.mpCost;
         multiplier = skill.multiplier;
-        lines.push(`${member.name}이 ${skill.name}을 사용했습니다.`);
+        lines.push(`${member.name}이 ${skill.name}${objectParticle(skill.name)} 사용했습니다.`);
       } else {
         lines.push(`${member.name}은 MP가 부족해 기본 공격을 했습니다.`);
       }
@@ -772,7 +789,7 @@ function doDungeonAction(db, player, userId, action) {
   }
 
   if (party.bossHp <= 0) {
-    lines.push(`${boss.name}을 처치했습니다.`);
+    lines.push(`${boss.name}${objectParticle(boss.name)} 처치했습니다.`);
     const rewardExp = Math.ceil(boss.exp / party.members.length);
     const rewardGold = Math.ceil(boss.gold / party.members.length);
     for (const memberId of party.members) {
@@ -788,7 +805,7 @@ function doDungeonAction(db, player, userId, action) {
   for (const memberId of party.members) {
     const member = db.players[memberId];
     if (!member || member.hp <= 0) continue;
-    const memberAction = typeof party.actions[memberId] === "string" ? { type: party.actions[memberId] } : party.actions[memberId];
+    const memberAction = party.actions[memberId]; // 항상 객체로 저장됨
     const guarding = memberAction.type === "방어";
     const taken = monsterDamage(member, boss, guarding);
     member.hp = Math.max(1, member.hp - taken);
@@ -797,7 +814,13 @@ function doDungeonAction(db, player, userId, action) {
 
   party.turn += 1;
   party.actions = {};
-  lines.push(`보스 HP ${Math.max(0, party.bossHp)}/${boss.hp}`);
+  lines.push(`보스 HP [${statBar(Math.max(0, party.bossHp), boss.hp)}] ${Math.max(0, party.bossHp)}/${boss.hp}`);
+  for (const memberId of party.members) {
+    const member = db.players[memberId];
+    if (!member) continue;
+    const ms = calcStats(member);
+    lines.push(`${member.name} HP [${statBar(member.hp, ms.maxHp)}] ${member.hp}/${ms.maxHp}`);
+  }
   lines.push("다음 행동을 선택하세요.");
   return lines.join("\n");
 }
