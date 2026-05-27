@@ -27,8 +27,10 @@ function loadDb() {
   db.battles ||= {};
   db.parties ||= {};
   db.trades ||= {};
+  db.arenas ||= {};
   db.nextPartyId ||= 1;
   db.nextTradeId ||= 1;
+  db.nextArenaId ||= 1;
   return db;
 }
 
@@ -53,7 +55,8 @@ function createPlayer(userId) {
     equipment: { weapon: "rusty_sword", hat: "cloth_hat", top: "cloth_armor", bottom: "cloth_pants" },
     enhance: { weapon: 0, hat: 0, top: 0, bottom: 0 },
     partyId: null,
-    tradeId: null
+    tradeId: null,
+    arenaId: null
   };
 }
 
@@ -72,10 +75,18 @@ function normalizePlayer(p, db = null) {
   p.enhance ||= { weapon: 0, hat: 0, top: 0, bottom: 0 };
   for (const slot of EQUIPMENT_SLOTS) { p.enhance[slot] ||= 0; }
   p.tradeId ||= null;
+  p.arenaId ||= null;
   if (db) {
     const trade = p.tradeId ? db.trades?.[p.tradeId] : null;
     if (p.tradeId && (!trade || !trade.members?.includes(p.userId))) p.tradeId = null;
+    const arena = p.arenaId ? db.arenas?.[p.arenaId] : null;
+    if (p.arenaId && (!arena || !arena.members?.includes(p.userId))) p.arenaId = null;
     if (!p.tradeId && isTradeRoomChoiceContext(p)) {
+      p.choices = [];
+      p.choiceBackCommand = null;
+      p.choicePage = 0;
+    }
+    if (!p.arenaId && isArenaRoomChoiceContext(p)) {
       p.choices = [];
       p.choiceBackCommand = null;
       p.choicePage = 0;
@@ -923,6 +934,7 @@ function partyRoomChoices(party, userId) {
 
 function createDungeonParty(db, player, userId, dungeonId) {
   if (player.partyId) return `이미 파티에 있습니다.`;
+  if (player.arenaId) return "결투방 참가 중에는 던전 방을 만들 수 없습니다.";
   const dungeonId_ = dungeonId || "goblin_den";
   const dg = dungeons[dungeonId_];
   if (!dg) return "존재하지 않는 던전입니다.";
@@ -948,6 +960,7 @@ function joinDungeonParty(db, player, userId, partyId) {
   if (!party) return "해당 방이 사라졌습니다. 방 목록을 새로고침하세요.";
   if (party.started) return "이미 전투가 시작된 방입니다.";
   if (player.partyId) return "이미 파티에 있습니다.";
+  if (player.arenaId) return "결투방 참가 중에는 던전 방에 참가할 수 없습니다.";
   const dg = dungeons[party.dungeonId];
   if (party.members.length >= dg.maxPlayers) return `방이 가득 찼습니다. (${dg.maxPlayers}/${dg.maxPlayers})`;
   if (player.level < dg.minLevel) return `${dg.name}은 Lv.${dg.minLevel}부터 입장 가능합니다.`;
@@ -1363,6 +1376,7 @@ function tradeItemChoices(db, player, userId) {
 function createTradeRoom(db, player, userId) {
   if (player.tradeId) return showTradeRoom(db, player, userId, "이미 거래방에 참가 중입니다.");
   if (player.partyId) return "파티 참가 중에는 거래방을 만들 수 없습니다.";
+  if (player.arenaId) return "결투방 참가 중에는 거래방을 만들 수 없습니다.";
   const id = String(db.nextTradeId++);
   db.trades[id] = { id, leader: userId, members: [userId], offers: { [userId]: tradeOffer() } };
   player.tradeId = id;
@@ -1372,6 +1386,7 @@ function createTradeRoom(db, player, userId) {
 function joinTradeRoom(db, player, userId, tradeId) {
   if (player.tradeId) return showTradeRoom(db, player, userId, "이미 거래방에 참가 중입니다.");
   if (player.partyId) return "파티 참가 중에는 거래방에 참가할 수 없습니다.";
+  if (player.arenaId) return "결투방 참가 중에는 거래방에 참가할 수 없습니다.";
   const trade = db.trades[tradeId];
   if (!trade) return "해당 거래방을 찾을 수 없습니다.";
   if (trade.members.length >= 2) return "거래방이 이미 가득 찼습니다.";
@@ -1491,6 +1506,309 @@ function leaveTrade(db, player, userId) {
   return "거래방에서 나갔습니다.";
 }
 
+// Arena duel system
+
+function activeArena(db, player) {
+  if (!player.arenaId) return null;
+  const arena = db.arenas[player.arenaId];
+  if (!arena || !arena.members?.includes(player.userId)) {
+    player.arenaId = null;
+    if (isArenaRoomChoiceContext(player)) {
+      player.choices = [];
+      player.choiceBackCommand = null;
+      player.choicePage = 0;
+    }
+    return null;
+  }
+  return arena;
+}
+
+function arenaMenuRootChoices() {
+  return [
+    { label: "결투방 만들기", command: "__arena_create" },
+    { label: "결투방 목록", command: "__arena_room_list" }
+  ];
+}
+
+function showArenaList(db) {
+  const open = Object.values(db.arenas).filter((a) => !a.started && a.members.length < 2);
+  if (!open.length) return { text: "[결투장]\n현재 열린 결투방이 없습니다.", choices: [] };
+  const lines = ["[결투장 - 방 목록]"];
+  const choices = [];
+  for (const arena of open) {
+    const leader = db.players[arena.leader];
+    const label = `결투방 #${arena.id} ${leader?.name || arena.leader} - ${arena.members.length}/2`;
+    lines.push(label);
+    choices.push({ label, command: `결투참가 ${arena.id}` });
+  }
+  return { text: lines.join("\n"), choices };
+}
+
+function showArenaRoom(db, player, userId, prefix) {
+  const arena = activeArena(db, player);
+  if (!arena) return "참가 중인 결투방이 없습니다.";
+  const lines = [];
+  if (prefix) lines.push(prefix, "");
+  lines.push(`[결투방 #${arena.id}]`);
+  lines.push(`상태: ${arena.started ? `전투 중 (${arena.turn}턴)` : "대기 중"}`);
+  lines.push(`인원: ${arena.members.length}/2`);
+  lines.push("");
+  for (const memberId of arena.members) {
+    const member = db.players[memberId];
+    const s = member ? calcStats(member) : null;
+    lines.push(`${member?.name || memberId}${memberId === arena.leader ? " 👑" : ""}`);
+    if (member && s) {
+      healToBounds(member);
+      const bounded = calcStats(member);
+      lines.push(`HP [${statBar(member.hp, bounded.maxHp)}] ${member.hp}/${bounded.maxHp}`);
+      lines.push(`MP [${statBar(member.mp, bounded.maxMp)}] ${member.mp}/${bounded.maxMp}`);
+    }
+    if (arena.started) lines.push(arena.actions?.[memberId] ? "행동: 선택 완료" : "행동: 대기");
+  }
+  if (!arena.started && arena.members.length < 2) lines.push("", "상대 플레이어를 기다리는 중입니다.");
+  return lines.join("\n");
+}
+
+function arenaRoomChoices(arena, userId) {
+  if (arena?.started) return arenaBattleChoices();
+  return [
+    { label: "새로고침", command: "__arena_refresh" },
+    { label: "나가기", command: "결투나가기" }
+  ];
+}
+
+function arenaBattleChoices() {
+  return [
+    { label: "공격", command: "공격" },
+    { label: "스킬", command: "__battle_skills" },
+    { label: "방어", command: "방어" }
+  ];
+}
+
+function isArenaChoiceCommand(command) {
+  const value = String(command || "");
+  return (
+    value === "__arena_menu" ||
+    value === "__arena_create" ||
+    value === "__arena_room_list" ||
+    value === "__arena_refresh" ||
+    value === "결투나가기" ||
+    value.startsWith("결투참가 ")
+  );
+}
+
+function isArenaChoiceContext(player) {
+  return Boolean(player.choices?.length) && player.choices.every((choice) => isArenaChoiceCommand(choice.command));
+}
+
+function isArenaRoomChoiceCommand(command) {
+  const value = String(command || "");
+  return (
+    value === "__arena_refresh" ||
+    value === "결투나가기" ||
+    value === "공격" ||
+    value === "방어" ||
+    value === "__battle_skills" ||
+    value.startsWith("스킬사용 ")
+  );
+}
+
+function isArenaRoomChoiceContext(player) {
+  return Boolean(player.choices?.length) && player.choices.every((choice) => isArenaRoomChoiceCommand(choice.command));
+}
+
+function createArenaRoom(db, player, userId) {
+  if (db.battles[userId]) return "전투 중에는 결투방을 만들 수 없습니다.";
+  if (player.partyId) return "파티 참가 중에는 결투방을 만들 수 없습니다.";
+  if (player.tradeId) return "거래방 참가 중에는 결투방을 만들 수 없습니다.";
+  if (player.arenaId) return showArenaRoom(db, player, userId, "이미 결투방에 참가 중입니다.");
+  const id = String(db.nextArenaId++);
+  db.arenas[id] = { id, leader: userId, members: [userId], started: false, turn: 1, actions: {} };
+  player.arenaId = id;
+  return showArenaRoom(db, player, userId, `결투방 #${id}을 만들었습니다.`);
+}
+
+function startArena(db, arena) {
+  arena.started = true;
+  arena.turn = 1;
+  arena.actions = {};
+  for (const memberId of arena.members) {
+    const member = db.players[memberId];
+    if (!member) continue;
+    const s = calcStats(member);
+    member.hp = s.maxHp;
+    member.mp = s.maxMp;
+  }
+}
+
+function joinArenaRoom(db, player, userId, arenaId) {
+  if (db.battles[userId]) return "전투 중에는 결투방에 참가할 수 없습니다.";
+  if (player.partyId) return "파티 참가 중에는 결투방에 참가할 수 없습니다.";
+  if (player.tradeId) return "거래방 참가 중에는 결투방에 참가할 수 없습니다.";
+  if (player.arenaId) return showArenaRoom(db, player, userId, "이미 결투방에 참가 중입니다.");
+  const arena = db.arenas[arenaId];
+  if (!arena) return "해당 결투방을 찾을 수 없습니다.";
+  if (arena.started) return "이미 결투가 시작된 방입니다.";
+  if (arena.members.length >= 2) return "결투방이 이미 가득 찼습니다.";
+  arena.members.push(userId);
+  player.arenaId = arena.id;
+  startArena(db, arena);
+  return showArenaRoom(db, player, userId, `결투방 #${arena.id}에 입장했습니다. 결투가 시작됩니다.`);
+}
+
+function leaveArena(db, player, userId) {
+  const arena = activeArena(db, player);
+  if (!arena) { player.arenaId = null; return "참가 중인 결투방이 없습니다."; }
+  if (arena.started) return "결투 중에는 나갈 수 없습니다.";
+  arena.members = arena.members.filter((id) => id !== userId);
+  player.arenaId = null;
+  if (!arena.members.length) {
+    delete db.arenas[arena.id];
+    return "결투방에서 나갔습니다. (방이 해산되었습니다.)";
+  }
+  if (arena.leader === userId) arena.leader = arena.members[0];
+  return "결투방에서 나갔습니다.";
+}
+
+function pvpDamage(attacker, defender, multiplier = 1, defenseScale = 0.45) {
+  const def = calcStats(defender).def;
+  return Math.max(1, Math.floor(playerDamage(attacker, multiplier) - def * defenseScale));
+}
+
+function applyArenaSkill(arena, attacker, defender, skill, lines) {
+  const as = calcStats(attacker);
+  switch (skill.type) {
+    case "heal":
+    case "party_heal": {
+      const heal = Math.floor(as.maxHp * (skill.healPercent / 100));
+      attacker.hp = Math.min(as.maxHp, attacker.hp + heal);
+      lines.push(`${attacker.name}: ${skill.name} - HP +${heal} 회복`);
+      break;
+    }
+    case "mp_restore": {
+      const restore = Math.min(skill.mpAmount, as.maxMp - attacker.mp);
+      attacker.mp += restore;
+      lines.push(`${attacker.name}: ${skill.name} - MP +${restore} 회복`);
+      break;
+    }
+    case "stun": {
+      const dmg = pvpDamage(attacker, defender, skill.multiplier, 0.4);
+      defender.hp -= dmg;
+      arena.stunned ||= {};
+      arena.stunned[defender.userId] = true;
+      lines.push(`${attacker.name}: ${skill.name} - ${defender.name}에게 ${dmg} 피해 + 스턴`);
+      break;
+    }
+    case "def_break": {
+      const dmg = pvpDamage(attacker, defender, skill.multiplier, 0.25);
+      defender.hp -= dmg;
+      lines.push(`${attacker.name}: ${skill.name} - 방어 돌파! ${defender.name}에게 ${dmg} 피해`);
+      break;
+    }
+    case "damage_heal": {
+      const dmg = pvpDamage(attacker, defender, skill.multiplier, 0.45);
+      defender.hp -= dmg;
+      const heal = Math.floor(as.maxHp * (skill.healPercent / 100));
+      attacker.hp = Math.min(as.maxHp, attacker.hp + heal);
+      lines.push(`${attacker.name}: ${skill.name} - ${defender.name}에게 ${dmg} 피해 & HP +${heal} 회복`);
+      break;
+    }
+    default: {
+      const dmg = pvpDamage(attacker, defender, skill.multiplier, 0.45);
+      defender.hp -= dmg;
+      lines.push(`${attacker.name}: ${skill.name} - ${defender.name}에게 ${dmg} 피해`);
+      break;
+    }
+  }
+}
+
+function doArenaAction(db, player, userId, action) {
+  const arena = activeArena(db, player);
+  if (!arena || !arena.started) return null;
+  const [actionName, actionArg] = String(action || "").split(/\s+/);
+  const validActions = ["공격", "방어", "스킬사용"];
+  if (!validActions.includes(actionName)) return "결투 행동: 1.공격 2.스킬 3.방어";
+  if (arena.actions[userId]) return "이미 이번 턴 행동을 선택했습니다. 상대를 기다리세요.";
+
+  if (actionName === "스킬사용") {
+    const skill = findSkill(player, actionArg);
+    if (!skill) return "사용할 수 없는 스킬입니다.";
+    if (player.mp < skill.mpCost) return `MP가 부족합니다. 필요 MP: ${skill.mpCost}`;
+  }
+
+  arena.actions[userId] = actionName === "스킬사용"
+    ? { type: "skill", skillId: actionArg }
+    : { type: actionName };
+
+  const missing = arena.members.filter((id) => !arena.actions[id]);
+  if (missing.length) return `행동을 기록했습니다. 상대의 행동을 기다립니다.`;
+
+  const [aId, bId] = arena.members;
+  const a = db.players[aId];
+  const b = db.players[bId];
+  const lines = [`[결투방 #${arena.id} ${arena.turn}턴 결과]`, ""];
+  const order = [aId, bId].sort((x, y) => calcStats(db.players[y]).dex - calcStats(db.players[x]).dex);
+
+  for (const attackerId of order) {
+    const defenderId = attackerId === aId ? bId : aId;
+    const attacker = db.players[attackerId];
+    const defender = db.players[defenderId];
+    if (!attacker || !defender || attacker.hp <= 0 || defender.hp <= 0) continue;
+    if (arena.stunned?.[attackerId]) {
+      lines.push(`${attacker.name}은 스턴으로 행동하지 못했습니다.`);
+      delete arena.stunned[attackerId];
+      continue;
+    }
+    const act = arena.actions[attackerId];
+    if (act.type === "방어") {
+      lines.push(`${attacker.name}은 방어 태세를 취했습니다.`);
+      continue;
+    }
+    if (act.type === "skill") {
+      const skill = findSkill(attacker, act.skillId);
+      if (!skill || attacker.mp < skill.mpCost) {
+        lines.push(`${attacker.name}은 스킬을 사용하지 못하고 기본 공격을 합니다.`);
+        const dmg = pvpDamage(attacker, defender, 1, arena.actions[defenderId]?.type === "방어" ? 0.75 : 0.45);
+        defender.hp -= dmg;
+        lines.push(`${attacker.name}: ${defender.name}에게 ${dmg} 피해`);
+      } else {
+        attacker.mp -= skill.mpCost;
+        lines.push(`${attacker.name}: MP -${skill.mpCost} (${attacker.mp}/${calcStats(attacker).maxMp})`);
+        applyArenaSkill(arena, attacker, defender, skill, lines);
+      }
+    } else {
+      const dmg = pvpDamage(attacker, defender, 1, arena.actions[defenderId]?.type === "방어" ? 0.75 : 0.45);
+      defender.hp -= dmg;
+      lines.push(`${attacker.name}: ${defender.name}에게 ${dmg} 피해`);
+    }
+  }
+
+  const loser = [a, b].find((p) => p.hp <= 0);
+  if (loser) {
+    const winner = loser.userId === aId ? b : a;
+    loser.hp = 1;
+    const ws = calcStats(winner);
+    winner.hp = Math.max(1, Math.min(winner.hp, ws.maxHp));
+    a.arenaId = null;
+    b.arenaId = null;
+    delete db.arenas[arena.id];
+    lines.push("", `${winner.name}의 승리!`);
+    lines.push(`${loser.name}은 결투장에서 물러났습니다.`);
+    return lines.join("\n");
+  }
+
+  arena.turn += 1;
+  arena.actions = {};
+  lines.push("");
+  for (const memberId of arena.members) {
+    const member = db.players[memberId];
+    const s = calcStats(member);
+    lines.push(...combatStatusLines(member.name, member.hp, s.maxHp, member.mp, s.maxMp));
+  }
+  lines.push("", "다음 행동을 선택하세요.");
+  return lines.join("\n");
+}
+
 function generalChoices() {
   return [
     { label: "상태",     command: "상태" },
@@ -1503,7 +1821,8 @@ function generalChoices() {
     { label: "전직",     command: "__job_menu" },
     { label: "던전",     command: "__dungeon_menu" },
     { label: "대장간",   command: "__smith_menu" },
-    { label: "거래소",   command: "__trade_menu" }
+    { label: "거래소",   command: "__trade_menu" },
+    { label: "결투장",   command: "__arena_menu" }
   ];
 }
 function statChoices() {
@@ -1529,6 +1848,10 @@ function dungeonMenuChoices() {
     { label: "방 만들기",      command: "__dungeon_create" },
     { label: "방 목록 (참가)", command: "__dungeon_room_list" }
   ];
+}
+
+function arenaMenuChoices() {
+  return arenaMenuRootChoices();
 }
 
 function smithChoices() {
@@ -1624,7 +1947,8 @@ function townChoices(player) {
     { label: "사냥", command: "사냥" },
     { label: "상점", command: "상점" },
     { label: "대장간", command: "__smith_menu" },
-    { label: "거래소", command: "__trade_menu" }
+    { label: "거래소", command: "__trade_menu" },
+    { label: "결투장", command: "__arena_menu" }
   ];
 }
 function inventoryChoices(player) {
@@ -1700,6 +2024,14 @@ function resolveNumberChoice(db, player, userId, text) {
   if (party && !party.started) {
     return partyRoomChoices(party, userId)[index]?.command || text;
   }
+  const arena = player.arenaId ? db.arenas[player.arenaId] : null;
+  if (arena?.started) {
+    if (isSkillChoiceContext(player)) return resolveVisibleChoice(player, number, text);
+    return arenaBattleChoices()[index]?.command || text;
+  }
+  if (arena && !arena.started) {
+    return arenaRoomChoices(arena, userId)[index]?.command || text;
+  }
   const trade = player.tradeId ? db.trades[player.tradeId] : null;
   if (trade && !isTradeChoiceContext(player)) {
     player.choices = tradeMenuChoices(db, player, userId);
@@ -1731,13 +2063,20 @@ function handleCommand(userId, rawText) {
   let backCommand = null;
 
   try {
+    const arenaReply =
+      command === "__show_choices" || command === "__battle_skills" || command === "스킬" || command.startsWith("__arena") || command === "결투나가기"
+        ? null
+        : doArenaAction(db, player, userId, text);
+
     // 던전 파티 전투 중이면 먼저 확인
     const dungeonReply =
-      command === "__show_choices" || command === "__battle_skills" || command === "스킬"
+      arenaReply || command === "__show_choices" || command === "__battle_skills" || command === "스킬"
         ? null
         : doDungeonAction(db, player, userId, text);
 
-    if (dungeonReply) {
+    if (arenaReply) {
+      reply = arenaReply;
+    } else if (dungeonReply) {
       reply = dungeonReply;
     } else if (command === "__show_choices") {
       choices     = player.choices || generalChoices();
@@ -1767,9 +2106,10 @@ function handleCommand(userId, rawText) {
     } else if (!command || command === "help") {
       reply = [
         "숫자로 모든 메뉴를 이용할 수 있습니다.",
-        "메뉴 → 상태, 사냥, 마을, 상점, 인벤토리, 휴식, 스탯, 전직, 던전, 대장간, 거래소",
+        "메뉴 → 상태, 사냥, 마을, 상점, 인벤토리, 휴식, 스탯, 전직, 던전, 대장간, 거래소, 결투장",
         "전투 → 1.공격 2.스킬 3.방어 4.도망",
-        "파티방 → 1.준비(해제) 2.새로고침 3.나가기"
+        "파티방 → 1.준비(해제) 2.새로고침 3.나가기",
+        "결투방 → 1.공격 2.스킬 3.방어"
       ].join("\n");
     // ── 상태 ──
     } else if (command === "상태") {
@@ -1785,7 +2125,11 @@ function handleCommand(userId, rawText) {
       backCommand = "__main_menu";
     // ── 사냥 ──
     } else if (command === "사냥") {
+      if (player.arenaId) {
+        reply = "결투방에 참가 중에는 사냥할 수 없습니다.";
+      } else {
       reply = startHunt(db, player, userId);
+      }
     } else if (["공격", "방어", "도망"].includes(command) || command === "스킬사용") {
       reply = doBattleTurn(db, player, userId, text);
     // ── 스킬 선택 ──
@@ -1941,6 +2285,35 @@ function handleCommand(userId, rawText) {
     } else if (command === "거래나가기") {
       reply   = leaveTrade(db, player, userId);
       choices = generalChoices();
+    // ── 결투장 ──
+    } else if (command === "__arena_menu") {
+      const arena = activeArena(db, player);
+      reply   = arena ? showArenaRoom(db, player, userId, null) : "[결투장]\n결투방을 만들거나 열린 방에 참가하세요.";
+      choices = arena ? arenaRoomChoices(arena, userId) : arenaMenuChoices();
+      backCommand = arena ? null : "__main_menu";
+    } else if (command === "__arena_create") {
+      reply   = createArenaRoom(db, player, userId);
+      const arena = activeArena(db, player);
+      choices = arena ? arenaRoomChoices(arena, userId) : arenaMenuChoices();
+      backCommand = arena ? null : "__arena_menu";
+    } else if (command === "__arena_room_list") {
+      const { text: listText, choices: roomChoices } = showArenaList(db);
+      reply   = listText;
+      choices = [...roomChoices, { label: "새로고침", command: "__arena_room_list" }];
+      backCommand = "__arena_menu";
+    } else if (command === "결투참가") {
+      reply   = joinArenaRoom(db, player, userId, arg1);
+      const arena = activeArena(db, player);
+      choices = arena ? arenaRoomChoices(arena, userId) : arenaMenuChoices();
+      backCommand = arena ? null : "__arena_menu";
+    } else if (command === "__arena_refresh") {
+      reply   = showArenaRoom(db, player, userId, null);
+      const arena = activeArena(db, player);
+      choices = arena ? arenaRoomChoices(arena, userId) : arenaMenuChoices();
+      backCommand = arena ? null : "__arena_menu";
+    } else if (command === "결투나가기") {
+      reply   = leaveArena(db, player, userId);
+      choices = generalChoices();
     // ── 던전 ──
     } else if (command === "__dungeon_menu") {
       reply   = ["[던전]", "방을 만들거나, 열린 방에 참가하세요."].join("\n");
@@ -1997,8 +2370,13 @@ function handleCommand(userId, rawText) {
 
     // ── 기본 선택지 결정 ──
     const party = player.partyId ? db.parties[player.partyId] : null;
+    const arena = player.arenaId ? db.arenas[player.arenaId] : null;
     if (db.battles[userId] && !choices.length) {
       choices = battleChoices();
+    } else if (arena?.started && !choices.length) {
+      choices = arenaBattleChoices();
+    } else if (arena && !choices.length) {
+      choices = arenaRoomChoices(arena, userId);
     } else if (party?.started && !choices.length) {
       choices = dungeonBattleChoices();
     } else if (party && !choices.length) {
