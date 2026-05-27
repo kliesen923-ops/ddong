@@ -219,21 +219,23 @@ function visibleChoices(player, choices) {
     if (hasBack) visible.push({ number: 6, label: "뒤로", command: backCommand });
     return visible;
   }
-  const maxPage = Math.max(0, Math.ceil((choices.length - 4) / 3));
+  const firstPageItems = hasBack ? 4 : 5;
+  const middlePageItems = hasBack ? 3 : 4;
+  const maxPage = Math.max(0, Math.ceil((choices.length - firstPageItems) / middlePageItems));
   player.choicePage = Math.min(Math.max(player.choicePage || 0, 0), maxPage);
-  const start = player.choicePage === 0 ? 0 : 4 + (player.choicePage - 1) * 3;
+  const start = player.choicePage === 0 ? 0 : firstPageItems + (player.choicePage - 1) * middlePageItems;
   const isFirst = player.choicePage === 0;
   const isLast = player.choicePage === maxPage;
-  const itemLimit = !isFirst && !isLast ? 3 : 4;
+  const itemLimit = isFirst ? firstPageItems : middlePageItems;
   const visible = choices.slice(start, start + itemLimit).map((choice, index) => ({ number: index + 1, ...choice }));
 
   if (isFirst) {
-    visible.push({ number: 5, label: "다음", command: "__next_choices" });
+    visible.push({ number: hasBack ? 5 : 6, label: "다음", command: "__next_choices" });
   } else if (isLast) {
-    visible.push({ number: 5, label: "이전", command: "__prev_choices" });
+    visible.push({ number: hasBack ? 5 : 6, label: "이전", command: "__prev_choices" });
   } else {
-    visible.push({ number: 4, label: "이전", command: "__prev_choices" });
-    visible.push({ number: 5, label: "다음", command: "__next_choices" });
+    visible.push({ number: hasBack ? 4 : 5, label: "이전", command: "__prev_choices" });
+    visible.push({ number: hasBack ? 5 : 6, label: "다음", command: "__next_choices" });
   }
   if (hasBack) visible.push({ number: 6, label: "뒤로", command: backCommand });
   return visible;
@@ -242,8 +244,11 @@ function visibleChoices(player, choices) {
 function appendChoices(player, text, choices) {
   if (!choices.length) return text;
   const visible = visibleChoices(player, choices);
-  const pageText = choices.length > (player.choiceBackCommand ? 5 : 6)
-    ? ` (${player.choicePage + 1}/${Math.max(1, Math.ceil((choices.length - 4) / 3) + 1)})`
+  const hasBack = Boolean(player.choiceBackCommand);
+  const firstPageItems = hasBack ? 4 : 5;
+  const middlePageItems = hasBack ? 3 : 4;
+  const pageText = choices.length > (hasBack ? 5 : 6)
+    ? ` (${player.choicePage + 1}/${Math.max(1, Math.ceil((choices.length - firstPageItems) / middlePageItems) + 1)})`
     : "";
   return [
     text,
@@ -386,7 +391,10 @@ function resolveNumberChoice(db, player, userId, text) {
       return "__show_choices";
     }
     if (command === "__next_choices") {
-      const maxPage = Math.max(0, Math.ceil((player.choices.length - 4) / 3));
+      const hasBack = Boolean(player.choiceBackCommand);
+      const firstPageItems = hasBack ? 4 : 5;
+      const middlePageItems = hasBack ? 3 : 4;
+      const maxPage = Math.max(0, Math.ceil((player.choices.length - firstPageItems) / middlePageItems));
       player.choicePage = Math.min(maxPage, (player.choicePage || 0) + 1);
       return "__show_choices";
     }
