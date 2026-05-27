@@ -351,7 +351,10 @@ function shopSellChoices(player) {
 }
 
 function learnedSkills(player) {
-  return (skills[player.job] || skills.novice || []).filter((skill) => player.level >= skill.level);
+  const skillMap = new Map();
+  for (const skill of skills.novice || []) skillMap.set(skill.id, skill);
+  for (const skill of skills[player.job] || []) skillMap.set(skill.id, skill);
+  return [...skillMap.values()].filter((skill) => player.level >= skill.level);
 }
 
 function skillChoices(player) {
