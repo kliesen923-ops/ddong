@@ -11,6 +11,8 @@ const ENHANCE_BONUS = { weapon: { atk: 3 }, hat: { def: 1 }, top: { def: 2 }, bo
 const ENHANCE_COST = (lv) => Math.floor(100 * Math.pow(1.6, lv));  // +0→1: 100G, +1→2: 160G ...
 const ENHANCE_MAX = 10;
 const GOLD_STEPS = [1, 5, 10, 50, 100, 500, 1000];
+const PVP_INITIAL_MMR = 1200;
+const PVP_MMR_K = 32;
 
 // 마법 계열 직업 (ATK = INT 기반)
 const MAGIC_JOBS = new Set(["mage", "wizard", "archmage", "cleric", "priest", "bishop",
@@ -56,7 +58,8 @@ function createPlayer(userId) {
     enhance: { weapon: 0, hat: 0, top: 0, bottom: 0 },
     partyId: null,
     tradeId: null,
-    arenaId: null
+    arenaId: null,
+    pvp: { wins: 0, losses: 0, mmr: PVP_INITIAL_MMR }
   };
 }
 
@@ -76,6 +79,7 @@ function normalizePlayer(p, db = null) {
   for (const slot of EQUIPMENT_SLOTS) { p.enhance[slot] ||= 0; }
   p.tradeId ||= null;
   p.arenaId ||= null;
+  normalizePvp(p);
   if (db) {
     const trade = p.tradeId ? db.trades?.[p.tradeId] : null;
     if (p.tradeId && (!trade || !trade.members?.includes(p.userId))) p.tradeId = null;
@@ -92,6 +96,45 @@ function normalizePlayer(p, db = null) {
       p.choicePage = 0;
     }
   }
+}
+
+function normalizePvp(player) {
+  player.pvp ||= {};
+  player.pvp.wins = Math.max(0, Math.floor(Number(player.pvp.wins) || 0));
+  player.pvp.losses = Math.max(0, Math.floor(Number(player.pvp.losses) || 0));
+  const mmr = Number(player.pvp.mmr);
+  player.pvp.mmr = Number.isFinite(mmr) && mmr > 0 ? Math.round(mmr) : PVP_INITIAL_MMR;
+  return player.pvp;
+}
+
+function pvpWinRate(player) {
+  const pvp = normalizePvp(player);
+  const total = pvp.wins + pvp.losses;
+  return total ? ((pvp.wins / total) * 100).toFixed(1) : "0.0";
+}
+
+function recordArenaResult(winner, loser) {
+  const winnerPvp = normalizePvp(winner);
+  const loserPvp = normalizePvp(loser);
+  const winnerBefore = winnerPvp.mmr;
+  const loserBefore = loserPvp.mmr;
+  const winnerExpected = 1 / (1 + Math.pow(10, (loserBefore - winnerBefore) / 400));
+  const loserExpected = 1 / (1 + Math.pow(10, (winnerBefore - loserBefore) / 400));
+
+  winnerPvp.wins += 1;
+  loserPvp.losses += 1;
+  winnerPvp.mmr = Math.max(1, Math.round(winnerBefore + PVP_MMR_K * (1 - winnerExpected)));
+  loserPvp.mmr = Math.max(1, Math.round(loserBefore + PVP_MMR_K * (0 - loserExpected)));
+
+  return {
+    winnerDelta: winnerPvp.mmr - winnerBefore,
+    loserDelta: loserPvp.mmr - loserBefore
+  };
+}
+
+function pvpSummary(player) {
+  const pvp = normalizePvp(player);
+  return `${pvp.wins}승 ${pvp.losses}패 / 승률 ${pvpWinRate(player)}% / MMR ${pvp.mmr}`;
 }
 
 // ── 직업 트리 ──────────────────────────────────────────────────────────
@@ -441,6 +484,7 @@ function applySkillSolo(player, battle, skill) {
 function status(player) {
   healToBounds(player);
   const s = calcStats(player);
+  const pvp = normalizePvp(player);
   const activeSets = activeSetBonuses(player);
   const setLines = activeSets.length
     ? ["", "세트 효과", ...activeSets.map((set) => `${set.name}: ${formatStats(set.bonus)}`)]
@@ -466,6 +510,9 @@ function status(player) {
     `모자: ${player.equipment.hat ? `${items[player.equipment.hat]?.name || ""}${enh.hat > 0 ? ` +${enh.hat}` : ""}` : "없음"}`,
     `상의: ${player.equipment.top ? `${items[player.equipment.top]?.name || ""}${enh.top > 0 ? ` +${enh.top}` : ""}` : "없음"}`,
     `하의: ${player.equipment.bottom ? `${items[player.equipment.bottom]?.name || ""}${enh.bottom > 0 ? ` +${enh.bottom}` : ""}` : "없음"}`,
+    "",
+    "결투 기록",
+    `승 ${pvp.wins} / 패 ${pvp.losses} / 승률 ${pvpWinRate(player)}% / MMR ${pvp.mmr}`,
     ...setLines
   ].join("\n");
 }
@@ -1539,6 +1586,7 @@ function showArenaList(db) {
     const leader = db.players[arena.leader];
     const label = `결투방 #${arena.id} ${leader?.name || arena.leader} - ${arena.members.length}/2`;
     lines.push(label);
+    if (leader) lines.push(`방장 전적: ${pvpSummary(leader)}`);
     choices.push({ label, command: `결투참가 ${arena.id}` });
   }
   return { text: lines.join("\n"), choices };
@@ -1562,6 +1610,7 @@ function showArenaRoom(db, player, userId, prefix) {
       const bounded = calcStats(member);
       lines.push(`HP [${statBar(member.hp, bounded.maxHp)}] ${member.hp}/${bounded.maxHp}`);
       lines.push(`MP [${statBar(member.mp, bounded.maxMp)}] ${member.mp}/${bounded.maxMp}`);
+      lines.push(`전적: ${pvpSummary(member)}`);
     }
     if (arena.started) lines.push(arena.actions?.[memberId] ? "행동: 선택 완료" : "행동: 대기");
   }
@@ -1786,6 +1835,7 @@ function doArenaAction(db, player, userId, action) {
   const loser = [a, b].find((p) => p.hp <= 0);
   if (loser) {
     const winner = loser.userId === aId ? b : a;
+    const mmr = recordArenaResult(winner, loser);
     loser.hp = 1;
     const ws = calcStats(winner);
     winner.hp = Math.max(1, Math.min(winner.hp, ws.maxHp));
@@ -1794,6 +1844,9 @@ function doArenaAction(db, player, userId, action) {
     delete db.arenas[arena.id];
     lines.push("", `${winner.name}의 승리!`);
     lines.push(`${loser.name}은 결투장에서 물러났습니다.`);
+    lines.push("");
+    lines.push(`${winner.name} 전적: ${pvpSummary(winner)} (${mmr.winnerDelta >= 0 ? "+" : ""}${mmr.winnerDelta})`);
+    lines.push(`${loser.name} 전적: ${pvpSummary(loser)} (${mmr.loserDelta >= 0 ? "+" : ""}${mmr.loserDelta})`);
     return lines.join("\n");
   }
 
