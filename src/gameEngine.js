@@ -147,8 +147,93 @@ function help() {
     "공격, 방어, 스킬, 도망",
     "상점, 구매 [아이템명], 인벤토리, 장착 [아이템명]",
     "스탯 [힘/민첩/지능/체력] [수치], 전직 [전사/마법사/궁수/도적]",
-    "던전생성, 던전참가 [번호], 준비"
+    "던전생성, 던전참가 [번호], 준비",
+    "",
+    "숫자 선택도 가능합니다."
   ].join("\n");
+}
+
+function appendChoices(text, choices) {
+  if (!choices.length) return text;
+  return [
+    text,
+    "",
+    "[선택]",
+    ...choices.map((choice, index) => `${index + 1}. ${choice.label}`)
+  ].join("\n");
+}
+
+function generalChoices() {
+  return [
+    { label: "상태", command: "상태" },
+    { label: "사냥", command: "사냥" },
+    { label: "마을", command: "마을" },
+    { label: "상점", command: "상점" },
+    { label: "인벤토리", command: "인벤토리" },
+    { label: "휴식", command: "휴식" }
+  ];
+}
+
+function battleChoices() {
+  return [
+    { label: "공격", command: "공격" },
+    { label: "스킬", command: "스킬" },
+    { label: "방어", command: "방어" },
+    { label: "도망", command: "도망" }
+  ];
+}
+
+function dungeonBattleChoices() {
+  return [
+    { label: "공격", command: "공격" },
+    { label: "스킬", command: "스킬" },
+    { label: "방어", command: "방어" }
+  ];
+}
+
+function waitingPartyChoices() {
+  return [
+    { label: "준비", command: "준비" },
+    { label: "상태", command: "상태" }
+  ];
+}
+
+function shopChoices(player) {
+  return towns[player.town].shop.map((id) => {
+    const item = items[id];
+    return { label: `${item.name} 구매 (${item.price}G)`, command: `구매 ${item.name}` };
+  });
+}
+
+function townChoices(player) {
+  const town = towns[player.town];
+  return [
+    ...town.connections.map((id) => ({ label: `${towns[id].name} 이동`, command: `이동 ${towns[id].name}` })),
+    { label: "사냥", command: "사냥" },
+    { label: "상점", command: "상점" }
+  ];
+}
+
+function inventoryChoices(player) {
+  const seen = new Set();
+  return player.inventory
+    .filter((id) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return ["weapon", "armor"].includes(items[id]?.type);
+    })
+    .map((id) => ({ label: `${items[id].name} 장착`, command: `장착 ${items[id].name}` }));
+}
+
+function resolveNumberChoice(db, player, userId, text) {
+  if (!/^\d+$/.test(text)) return text;
+  const index = Number(text) - 1;
+  if (player.choices?.[index]?.command) return player.choices[index].command;
+  if (db.battles[userId]) return battleChoices()[index]?.command || text;
+  const party = player.partyId ? db.parties[player.partyId] : null;
+  if (party?.started) return dungeonBattleChoices()[index]?.command || text;
+  if (party) return waitingPartyChoices()[index]?.command || text;
+  return generalChoices()[index]?.command || text;
 }
 
 function startHunt(db, player, userId) {
@@ -168,7 +253,7 @@ function startHunt(db, player, userId) {
     `나 HP ${player.hp}/${calcStats(player).maxHp}`,
     `${monster.name} HP ${monster.hp}/${monster.hp}`,
     "",
-    "행동: 공격 / 방어 / 스킬 / 도망"
+    "행동을 선택하세요."
   ].join("\n");
 }
 
@@ -221,7 +306,7 @@ function doBattleTurn(db, player, userId, action) {
     battle.monsterHp -= dmg;
     lines.push(`${monster.name}에게 ${dmg} 피해를 입혔습니다.`);
   } else {
-    return "전투 행동을 이해하지 못했습니다. 공격 / 방어 / 스킬 / 도망 중 하나를 입력하세요.";
+    return "전투 행동을 이해하지 못했습니다. 1. 공격 2. 스킬 3. 방어 4. 도망 중 하나를 입력하세요.";
   }
 
   if (battle.monsterHp <= 0) {
@@ -247,7 +332,7 @@ function doBattleTurn(db, player, userId, action) {
   lines.push("");
   lines.push(`나 HP ${player.hp}/${calcStats(player).maxHp} / MP ${player.mp}/${calcStats(player).maxMp}`);
   lines.push(`${monster.name} HP ${Math.max(0, battle.monsterHp)}/${monster.hp}`);
-  lines.push("다음 행동: 공격 / 방어 / 스킬 / 도망");
+  lines.push("다음 행동을 선택하세요.");
   return lines.join("\n");
 }
 
@@ -388,14 +473,14 @@ function readyDungeon(db, player, userId) {
   return [
     `${dungeons[party.dungeonId].name} 보스전이 시작됩니다.`,
     `보스: ${dungeons[party.dungeonId].boss.name} HP ${party.bossHp}`,
-    "각자 공격 / 방어 / 스킬 중 하나를 입력하세요."
+    "각자 행동을 선택하세요."
   ].join("\n");
 }
 
 function doDungeonAction(db, player, userId, action) {
   const party = db.parties[player.partyId];
   if (!party || !party.started) return null;
-  if (!["공격", "방어", "스킬"].includes(action)) return "던전 전투 행동: 공격 / 방어 / 스킬";
+  if (!["공격", "방어", "스킬"].includes(action)) return "던전 전투 행동: 1. 공격 2. 스킬 3. 방어";
   party.actions[userId] = action;
   const missing = party.members.filter((id) => !party.actions[id]);
   if (missing.length > 0) return `행동을 기록했습니다. 대기 중: ${missing.length}명`;
@@ -452,7 +537,7 @@ function doDungeonAction(db, player, userId, action) {
   party.turn += 1;
   party.actions = {};
   lines.push(`보스 HP ${Math.max(0, party.bossHp)}/${boss.hp}`);
-  lines.push("다음 행동: 공격 / 방어 / 스킬");
+  lines.push("다음 행동을 선택하세요.");
   return lines.join("\n");
 }
 
@@ -466,12 +551,13 @@ function rest(player) {
 function handleCommand(userId, rawText) {
   const db = loadDb();
   const player = getPlayer(db, userId);
-  const text = String(rawText || "").trim();
+  const text = resolveNumberChoice(db, player, userId, String(rawText || "").trim());
   const [command, ...args] = text.split(/\s+/);
   const arg1 = args[0];
   const arg2 = args[1];
-  const rest = args.join(" ");
+  const restText = args.join(" ");
   let reply;
+  let choices = [];
 
   try {
     const dungeonReply = doDungeonAction(db, player, userId, command);
@@ -483,8 +569,10 @@ function handleCommand(userId, rawText) {
       reply = status(player);
     } else if (command === "마을") {
       reply = showTown(player);
+      choices = townChoices(player);
     } else if (command === "이동") {
-      reply = moveTown(player, rest);
+      reply = moveTown(player, restText);
+      choices = townChoices(player);
     } else if (command === "휴식") {
       reply = rest(player);
     } else if (command === "사냥") {
@@ -493,12 +581,14 @@ function handleCommand(userId, rawText) {
       reply = doBattleTurn(db, player, userId, command);
     } else if (command === "상점") {
       reply = showShop(player);
+      choices = shopChoices(player);
     } else if (command === "구매") {
-      reply = buyItem(player, rest);
+      reply = buyItem(player, restText);
     } else if (command === "인벤토리" || command === "가방") {
       reply = inventory(player);
+      choices = inventoryChoices(player);
     } else if (command === "장착") {
-      reply = equip(player, rest);
+      reply = equip(player, restText);
     } else if (command === "스탯") {
       reply = addStat(player, arg1, arg2);
     } else if (command === "전직") {
@@ -512,6 +602,19 @@ function handleCommand(userId, rawText) {
     } else {
       reply = `알 수 없는 명령어입니다.\n\n${help()}`;
     }
+
+    const party = player.partyId ? db.parties[player.partyId] : null;
+    if (db.battles[userId]) {
+      choices = battleChoices();
+    } else if (party?.started) {
+      choices = dungeonBattleChoices();
+    } else if (party) {
+      choices = waitingPartyChoices();
+    } else if (!choices.length) {
+      choices = generalChoices();
+    }
+    player.choices = choices;
+    reply = appendChoices(reply, choices);
   } finally {
     saveDb(db);
   }
