@@ -9,6 +9,8 @@ const ENHANCE_COST = (lv) => Math.floor(100 * Math.pow(1.6, lv));  // +0→1: 10
 const ENHANCE_MAX = 10;
 // +0~+4: 100%, +5: 80%, +6: 70%, +7: 60%, +8: 50%, +9: 40%
 const ENHANCE_SUCCESS_RATE = [1.0, 1.0, 1.0, 1.0, 1.0, 0.8, 0.7, 0.6, 0.5, 0.4];
+// 실패 시 하락량 (현재 강화 수치 기준): +5 유지, +6~+7: -1, +8~+9: -2
+const ENHANCE_FAIL_DROP = [0, 0, 0, 0, 0, 0, 1, 1, 2, 2];
 const GOLD_STEPS = [1, 5, 10, 50, 100, 500, 1000];
 const PVP_INITIAL_MMR = 1200;
 const PVP_MMR_K = 32;
@@ -870,7 +872,10 @@ function showSmith(player) {
     if (itemId) {
       const nextCost = lv < ENHANCE_MAX ? enhanceCost(slot, itemId, lv) : "최대";
       const rate = ENHANCE_SUCCESS_RATE[lv];
-      const rateText = lv < ENHANCE_MAX && rate < 1 ? ` / 성공률 ${Math.round(rate * 100)}%` : "";
+      const drop = ENHANCE_FAIL_DROP[lv] ?? 1;
+      const rateText = lv < ENHANCE_MAX && rate < 1
+        ? ` / 성공률 ${Math.round(rate * 100)}% / 실패 ${drop === 0 ? "유지" : `-${drop}`}`
+        : "";
       lines.push(`${slotName}: ${items[itemId]?.name || itemId} +${lv}  (다음 강화: ${nextCost === "최대" ? "최대치" : nextCost + "G"}${rateText})`);
     } else {
       lines.push(`${slotName}: 장착 없음`);
@@ -894,13 +899,15 @@ function smithEnhance(player, slot) {
   const slotName = { weapon: "무기", hat: "모자", top: "상의", bottom: "하의" }[slot];
   const iname = items[itemId]?.name || itemId;
   player.gold -= cost;
+  const drop = ENHANCE_FAIL_DROP[lv] ?? 1;
   if (Math.random() < rate) {
     enh[slot] = lv + 1;
     const rateText = rate < 1 ? ` (성공 확률 ${Math.round(rate * 100)}%)` : "";
     return `✅ 강화 성공!${rateText}\n${slotName} [${iname}] +${lv} → +${enh[slot]}\n잔액: ${player.gold}G\n\n${showSmith(player)}`;
   } else {
-    enh[slot] = Math.max(0, lv - 1);
-    return `❌ 강화 실패! (성공 확률 ${Math.round(rate * 100)}%)\n${slotName} [${iname}] +${lv} → +${enh[slot]} (하락)\n잔액: ${player.gold}G\n\n${showSmith(player)}`;
+    enh[slot] = Math.max(0, lv - drop);
+    const dropText = drop === 0 ? "유지" : `-${drop} 하락`;
+    return `❌ 강화 실패! (성공 확률 ${Math.round(rate * 100)}%)\n${slotName} [${iname}] +${lv} → +${enh[slot]} (${dropText})\n잔액: ${player.gold}G\n\n${showSmith(player)}`;
   }
 }
 
