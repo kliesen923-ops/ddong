@@ -1,5 +1,6 @@
 const http = require("http");
 const { handleCommand } = require("./src/gameEngine");
+const { initDb } = require("./src/dbClient");
 
 // Windows CMD 창 크기 조절(최소화/최대화) 시 SIGBREAK 신호로 인한 종료 방지
 process.on("SIGBREAK", () => {});
@@ -78,14 +79,14 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/kakao/skill") {
       const payload = await readBody(req);
-      const text = handleCommand(getKakaoUserId(payload), getKakaoText(payload));
+      const text = await handleCommand(getKakaoUserId(payload), getKakaoText(payload));
       sendJson(res, 200, kakaoResponse(text));
       return;
     }
 
     if (req.method === "POST" && req.url === "/test") {
       const payload = await readBody(req);
-      const text = handleCommand(payload.userId || "local-user", payload.text || "");
+      const text = await handleCommand(payload.userId || "local-user", payload.text || "");
       sendJson(res, 200, { text });
       return;
     }
@@ -96,6 +97,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`gametalk server listening on http://localhost:${PORT}`);
+async function main() {
+  await initDb();
+  server.listen(PORT, () => {
+    console.log(`gametalk server listening on http://localhost:${PORT}`);
+  });
+}
+
+main().catch((err) => {
+  console.error("Failed to start:", err);
+  process.exit(1);
 });

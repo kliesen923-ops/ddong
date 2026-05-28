@@ -1,9 +1,6 @@
-const fs = require("fs");
-const path = require("path");
 const { jobs, skills, towns, items, setBonuses, huntingGrounds, monsters, dungeons, jobUniqueWeapons } = require("./gameData");
+const { loadDb, saveDb } = require("./dbClient");
 
-const DB_DIR = path.join(__dirname, "..", "data");
-const DB_PATH = path.join(DB_DIR, "db.json");
 const EQUIPMENT_SLOTS = ["weapon", "hat", "top", "bottom"];
 
 // 강화 슬롯별 추가 스탯
@@ -19,26 +16,6 @@ const MAGIC_JOBS = new Set(["mage", "wizard", "archmage", "cleric", "priest", "b
   "bard", "minstrel", "legend_bard"]);
 // 하이브리드 (ATK = STR + INT)
 const HYBRID_JOBS = new Set(["paladin", "holy_knight", "divine_knight"]);
-
-function loadDb() {
-  if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-  const db = fs.existsSync(DB_PATH)
-    ? JSON.parse(fs.readFileSync(DB_PATH, "utf8"))
-    : { players: {}, battles: {}, parties: {}, nextPartyId: 1 };
-  db.players ||= {};
-  db.battles ||= {};
-  db.parties ||= {};
-  db.trades ||= {};
-  db.arenas ||= {};
-  db.nextPartyId ||= 1;
-  db.nextTradeId ||= 1;
-  db.nextArenaId ||= 1;
-  return db;
-}
-
-function saveDb(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf8");
-}
 
 function createPlayer(userId) {
   return {
@@ -2103,8 +2080,8 @@ function resolveNumberChoice(db, player, userId, text) {
 
 // ── 메인 핸들러 ──────────────────────────────────────────────────────
 
-function handleCommand(userId, rawText) {
-  const db     = loadDb();
+async function handleCommand(userId, rawText) {
+  const db     = await loadDb();
   const player = getPlayer(db, userId);
   const text   = resolveNumberChoice(db, player, userId, String(rawText || "").trim());
   const [command, ...args] = text.split(/\s+/);
@@ -2443,7 +2420,7 @@ function handleCommand(userId, rawText) {
     player.choiceBackCommand = backCommand;
     reply = appendChoices(player, reply, choices);
   } finally {
-    saveDb(db);
+    await saveDb(db);
   }
 
   return reply;
