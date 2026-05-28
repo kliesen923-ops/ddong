@@ -1631,11 +1631,7 @@ function isArenaRoomChoiceCommand(command) {
   const value = String(command || "");
   return (
     value === "__arena_refresh" ||
-    value === "결투나가기" ||
-    value === "공격" ||
-    value === "방어" ||
-    value === "__battle_skills" ||
-    value.startsWith("스킬사용 ")
+    value === "결투나가기"
   );
 }
 
