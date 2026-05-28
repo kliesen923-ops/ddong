@@ -2043,12 +2043,12 @@ function resolveNumberChoice(db, player, userId, text) {
 
   // 전투/파티 상태는 항상 최우선 (다른 플레이어의 행동으로 상태가 바뀌었을 수 있음)
   if (db.battles[userId]) {
-    if (isSkillChoiceContext(player)) return resolveVisibleChoice(player, number, text);
+    if (player.choices?.length) return resolveVisibleChoice(player, number, text);
     return battleChoices()[index]?.command || text;
   }
   const party = player.partyId ? db.parties[player.partyId] : null;
   if (party?.started) {
-    if (isSkillChoiceContext(player)) return resolveVisibleChoice(player, number, text);
+    if (player.choices?.length) return resolveVisibleChoice(player, number, text);
     return dungeonBattleChoices()[index]?.command || text;
   }
   if (party && !party.started) {
@@ -2056,7 +2056,7 @@ function resolveNumberChoice(db, player, userId, text) {
   }
   const arena = player.arenaId ? db.arenas[player.arenaId] : null;
   if (arena?.started) {
-    if (isSkillChoiceContext(player)) return resolveVisibleChoice(player, number, text);
+    if (player.choices?.length) return resolveVisibleChoice(player, number, text);
     return arenaBattleChoices()[index]?.command || text;
   }
   if (arena && !arena.started) {
