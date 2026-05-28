@@ -7,6 +7,8 @@ const EQUIPMENT_SLOTS = ["weapon", "hat", "top", "bottom"];
 const ENHANCE_BONUS = { weapon: { atk: 3 }, hat: { def: 1 }, top: { def: 2 }, bottom: { def: 1 } };
 const ENHANCE_COST = (lv) => Math.floor(100 * Math.pow(1.6, lv));  // +0→1: 100G, +1→2: 160G ...
 const ENHANCE_MAX = 10;
+// +0~+4: 100%, +5: 80%, +6: 70%, +7: 60%, +8: 50%, +9: 40%
+const ENHANCE_SUCCESS_RATE = [1.0, 1.0, 1.0, 1.0, 1.0, 0.8, 0.7, 0.6, 0.5, 0.4];
 const GOLD_STEPS = [1, 5, 10, 50, 100, 500, 1000];
 const PVP_INITIAL_MMR = 1200;
 const PVP_MMR_K = 32;
@@ -867,7 +869,9 @@ function showSmith(player) {
     const slotName = { weapon: "무기", hat: "모자", top: "상의", bottom: "하의" }[slot];
     if (itemId) {
       const nextCost = lv < ENHANCE_MAX ? enhanceCost(slot, itemId, lv) : "최대";
-      lines.push(`${slotName}: ${items[itemId]?.name || itemId} +${lv}  (다음 강화: ${nextCost === "최대" ? "최대치" : nextCost + "G"})`);
+      const rate = ENHANCE_SUCCESS_RATE[lv];
+      const rateText = lv < ENHANCE_MAX && rate < 1 ? ` / 성공률 ${Math.round(rate * 100)}%` : "";
+      lines.push(`${slotName}: ${items[itemId]?.name || itemId} +${lv}  (다음 강화: ${nextCost === "최대" ? "최대치" : nextCost + "G"}${rateText})`);
     } else {
       lines.push(`${slotName}: 장착 없음`);
     }
@@ -886,11 +890,18 @@ function smithEnhance(player, slot) {
   if (lv >= ENHANCE_MAX) return `이미 최대 강화 수치(+${ENHANCE_MAX})입니다.`;
   const cost = enhanceCost(slot, itemId, lv);
   if (player.gold < cost) return `골드가 부족합니다. 필요: ${cost}G (보유: ${player.gold}G)`;
-  player.gold -= cost;
-  enh[slot] = lv + 1;
+  const rate = ENHANCE_SUCCESS_RATE[lv] ?? 1.0;
   const slotName = { weapon: "무기", hat: "모자", top: "상의", bottom: "하의" }[slot];
   const iname = items[itemId]?.name || itemId;
-  return `${slotName} [${iname}]${objectParticle(iname)} +${enh[slot]}으로 강화했습니다!\n잔액: ${player.gold}G\n\n${showSmith(player)}`;
+  player.gold -= cost;
+  if (Math.random() < rate) {
+    enh[slot] = lv + 1;
+    const rateText = rate < 1 ? ` (성공 확률 ${Math.round(rate * 100)}%)` : "";
+    return `✅ 강화 성공!${rateText}\n${slotName} [${iname}] +${lv} → +${enh[slot]}\n잔액: ${player.gold}G\n\n${showSmith(player)}`;
+  } else {
+    enh[slot] = Math.max(0, lv - 1);
+    return `❌ 강화 실패! (성공 확률 ${Math.round(rate * 100)}%)\n${slotName} [${iname}] +${lv} → +${enh[slot]} (하락)\n잔액: ${player.gold}G\n\n${showSmith(player)}`;
+  }
 }
 
 function rest(player) {
