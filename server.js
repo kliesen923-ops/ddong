@@ -49,8 +49,10 @@ function kakaoResponse(text) {
 }
 
 function kakaoImageResponse(imageUrl, text) {
-  const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
-  const absoluteUrl = imageUrl.startsWith("http") ? imageUrl : `${baseUrl}${imageUrl}`;
+  const domain = process.env.BASE_URL ||
+    (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null);
+  if (!domain) return kakaoResponse(text);
+  const absoluteUrl = imageUrl.startsWith("http") ? imageUrl : `${domain}${imageUrl}`;
   return {
     version: "2.0",
     template: {
