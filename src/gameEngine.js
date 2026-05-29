@@ -533,73 +533,100 @@ function doBattleTurn(db, player, userId, action) {
   const lines = [`[전투 ${battle.turn}턴 결과]`];
   const [actionName, actionArg] = String(action || "").split(/\s+/);
 
-  let stun = false;
+  const defeatPlayer = () => {
+    player.hp = 1;
+    player.gold = Math.max(0, player.gold - Math.ceil(monster.gold / 2));
+    delete db.battles[userId];
+    lines.push("쓰러졌습니다. 마을로 귀환하고 일부 골드를 잃었습니다.");
+  };
 
+  const killMonster = () => {
+    lines.push(`${monster.name}${objectParticle(monster.name)} 처치했습니다.`);
+    lines.push(...addRewards(player, monster.exp, monster.gold));
+    lines.push(...rollDrops(player, monster.drops));
+    delete db.battles[userId];
+  };
+
+  // ── 도망 ──
   if (actionName === "도망") {
     if (Math.random() < 0.65) { delete db.battles[userId]; return "도망쳤습니다."; }
     lines.push("도망에 실패했습니다.");
-  } else if (actionName === "방어") {
+    player.hp -= monsterDamage(player, monster, false);
+    lines.push(`${monster.name}의 공격: ${s.maxHp - player.hp > 0 ? s.maxHp - player.hp : "?"} 피해`);
+    if (player.hp <= 0) { defeatPlayer(); return lines.join("\n"); }
+    battle.turn += 1;
+    const ls = calcStats(player);
+    lines.push("", ...combatStatusLines("나", player.hp, ls.maxHp, player.mp, ls.maxMp));
+    lines.push(...combatStatusLines(monster.name, Math.max(0, battle.monsterHp), monster.hp));
+    lines.push("다음 행동을 선택하세요.");
+    return lines.join("\n");
+  }
+
+  // ── 방어 (dex 무관 - 선언형 행동) ──
+  if (actionName === "방어") {
     lines.push("방어 태세를 취했습니다.");
     const taken = monsterDamage(player, monster, true);
     player.hp -= taken;
     lines.push(`${monster.name}의 공격: ${taken} 피해 (감소됨)`);
-    if (player.hp <= 0) {
-      player.hp = 1;
-      player.gold = Math.max(0, player.gold - Math.ceil(monster.gold / 2));
-      delete db.battles[userId];
-      lines.push("쓰러졌습니다. 마을로 귀환하고 일부 골드를 잃었습니다.");
-      return lines.join("\n");
-    }
+    if (player.hp <= 0) { defeatPlayer(); return lines.join("\n"); }
     battle.turn += 1;
     lines.push("", ...combatStatusLines("나", player.hp, s.maxHp, player.mp, s.maxMp));
     lines.push(...combatStatusLines(monster.name, Math.max(0, battle.monsterHp), monster.hp));
     lines.push("다음 행동을 선택하세요.");
     return lines.join("\n");
-  } else if (actionName === "스킬사용") {
+  }
+
+  // ── 공격 / 스킬사용 (dex 순서 적용) ──
+  if (actionName !== "공격" && actionName !== "스킬사용") {
+    return "전투 행동: 1.공격 2.스킬 3.방어 4.도망";
+  }
+
+  const playerFirst = s.dex >= (monster.dex || 0);
+  let stun = false;
+
+  // 몬스터 선공
+  if (!playerFirst) {
+    const taken = monsterDamage(player, monster, false);
+    player.hp -= taken;
+    lines.push(`${monster.name}의 선공! ${taken} 피해`);
+    if (player.hp <= 0) { defeatPlayer(); return lines.join("\n"); }
+  }
+
+  // 플레이어 행동
+  if (actionName === "스킬사용") {
     const skill = findSkill(player, actionArg);
     if (!skill) return "사용할 수 없는 스킬입니다.";
     if (player.mp < skill.mpCost) return `MP가 부족합니다. 필요 MP: ${skill.mpCost}`;
     player.mp -= skill.mpCost;
-    const afterSkillStats = calcStats(player);
-    lines.push(`MP -${skill.mpCost} (${player.mp}/${afterSkillStats.maxMp})`);
+    lines.push(`MP -${skill.mpCost} (${player.mp}/${calcStats(player).maxMp})`);
     const result = applySkillSolo(player, battle, skill);
     lines.push(...result.lines);
     stun = result.stun;
-  } else if (actionName === "공격") {
+  } else {
     const dmg = Math.max(1, playerDamage(player) - monster.def);
     battle.monsterHp -= dmg;
     lines.push(`${monster.name}에게 ${dmg} 피해를 입혔습니다.`);
-  } else {
-    return "전투 행동: 1.공격 2.스킬 3.방어 4.도망";
   }
 
-  if (battle.monsterHp <= 0) {
-    lines.push(`${monster.name}${objectParticle(monster.name)} 처치했습니다.`);
-    lines.push(...addRewards(player, monster.exp, monster.gold));
-    lines.push(...rollDrops(player, monster.drops));
-    delete db.battles[userId];
-    return lines.join("\n");
+  // 몬스터 처치 확인
+  if (battle.monsterHp <= 0) { killMonster(); return lines.join("\n"); }
+
+  // 몬스터 반격 (플레이어 선공이었던 경우)
+  if (playerFirst) {
+    if (stun) {
+      lines.push(`${monster.name}은 스턴으로 반격하지 못했습니다.`);
+    } else {
+      const taken = monsterDamage(player, monster, false);
+      player.hp -= taken;
+      lines.push(`${monster.name}의 반격: ${taken} 피해`);
+    }
   }
 
-  if (!stun) {
-    const taken = monsterDamage(player, monster, false);
-    player.hp -= taken;
-    lines.push(`${monster.name}의 반격: ${taken} 피해`);
-  } else {
-    lines.push(`${monster.name}은 스턴 상태로 반격하지 못했습니다.`);
-  }
-
-  if (player.hp <= 0) {
-    player.hp = 1;
-    player.gold = Math.max(0, player.gold - Math.ceil(monster.gold / 2));
-    delete db.battles[userId];
-    lines.push("쓰러졌습니다. 마을로 귀환하고 일부 골드를 잃었습니다.");
-    return lines.join("\n");
-  }
+  if (player.hp <= 0) { defeatPlayer(); return lines.join("\n"); }
 
   battle.turn += 1;
-  const latestStats = calcStats(player);
-  lines.push("", ...combatStatusLines("나", player.hp, latestStats.maxHp, player.mp, latestStats.maxMp));
+  const ls = calcStats(player);
+  lines.push("", ...combatStatusLines("나", player.hp, ls.maxHp, player.mp, ls.maxMp));
   lines.push(...combatStatusLines(monster.name, Math.max(0, battle.monsterHp), monster.hp));
   lines.push("다음 행동을 선택하세요.");
   return lines.join("\n");
@@ -1095,97 +1122,102 @@ function doDungeonAction(db, player, userId, action) {
   const boss = dg.boss;
   const lines = [`[${dg.name} ${party.turn}턴 결과]`, ""];
 
-  // 플레이어 → 보스 공격 단계
-  for (const memberId of party.members) {
+  // dex 기준으로 선공(보스보다 빠른 플레이어) / 후공 분리
+  const bossDex = boss.dex || 0;
+  const fastMembers = party.members.filter((id) => (db.players[id]?.hp ?? 0) > 0 && calcStats(db.players[id]).dex >= bossDex);
+  const slowMembers = party.members.filter((id) => (db.players[id]?.hp ?? 0) > 0 && calcStats(db.players[id]).dex < bossDex);
+
+  // 멤버 한 명의 공격을 처리하는 헬퍼
+  const processMemberAttack = (memberId) => {
     const member = db.players[memberId];
-    if (!member || member.hp <= 0) continue;
+    if (!member || member.hp <= 0) return;
     const act = party.actions[memberId];
-
-    if (act.type === "방어") {
-      lines.push(`${member.name}은 방어 태세를 취했습니다.`);
-      continue;
+    if (!act || act.type === "방어") {
+      if (act?.type === "방어") lines.push(`${member.name}은 방어 태세를 취했습니다.`);
+      return;
     }
-
+    const ms = calcStats(member);
     if (act.type === "skill") {
       const skill = findSkill(member, act.skillId);
-      if (!skill) { lines.push(`${member.name}은 스킬을 사용하지 못했습니다.`); continue; }
-      if (member.mp < skill.mpCost) {
-        lines.push(`${member.name}은 MP 부족으로 기본 공격을 합니다.`);
+      if (!skill || member.mp < skill.mpCost) {
         const dmg = Math.max(1, playerDamage(member, 1) - boss.def);
         party.bossHp -= dmg;
-        lines.push(`${member.name}: ${boss.name}에게 ${dmg} 피해`);
-        continue;
+        lines.push(`${member.name}은 MP 부족으로 기본 공격 → ${boss.name}에게 ${dmg} 피해`);
+        return;
       }
       member.mp -= skill.mpCost;
-      lines.push(`${member.name}: MP -${skill.mpCost} (${member.mp}/${calcStats(member).maxMp})`);
-
-      // 스킬 타입에 따른 처리
-      const ms = calcStats(member);
+      lines.push(`${member.name}: MP -${skill.mpCost} (${member.mp}/${ms.maxMp})`);
       switch (skill.type) {
-        case "heal": {
+        case "heal": case "party_heal": {
           const heal = Math.floor(ms.maxHp * (skill.healPercent / 100));
           member.hp = Math.min(ms.maxHp, member.hp + heal);
-          lines.push(`${member.name}: ${skill.name} - 자신 HP +${heal} 회복`);
-          break;
+          lines.push(`${member.name}: ${skill.name} - 자신 HP +${heal} 회복`); break;
         }
-        case "party_heal": {
+        case "aoe_heal": {
           const healLines = [];
           for (const mid of party.members) {
-            const m = db.players[mid];
-            if (!m) continue;
-            const ms2 = calcStats(m);
-            const heal = Math.floor(ms2.maxHp * (skill.healPercent / 100));
-            m.hp = Math.min(ms2.maxHp, m.hp + heal);
-            healLines.push(`${m.name} +${heal}`);
+            const m = db.players[mid]; if (!m) continue;
+            const ms2 = calcStats(m); const heal = Math.floor(ms2.maxHp * (skill.healPercent / 100));
+            m.hp = Math.min(ms2.maxHp, m.hp + heal); healLines.push(`${m.name} +${heal}`);
           }
-          lines.push(`${member.name}: ${skill.name} - 전체 회복 [${healLines.join(", ")}]`);
-          break;
+          lines.push(`${member.name}: ${skill.name} - 전체 회복 [${healLines.join(", ")}]`); break;
         }
         case "mp_restore": {
           const restore = Math.min(skill.mpAmount, ms.maxMp - member.mp);
           member.mp += restore;
-          lines.push(`${member.name}: ${skill.name} - MP +${restore} 회복`);
-          break;
+          lines.push(`${member.name}: ${skill.name} - MP +${restore} 회복`); break;
         }
         case "stun": {
           const dmg = Math.max(1, playerDamage(member, skill.multiplier) - boss.def);
-          party.bossHp -= dmg;
-          party.bossStunned = true;
-          lines.push(`${member.name}: ${skill.name} - ${boss.name}에게 ${dmg} 피해 + 스턴`);
-          break;
+          party.bossHp -= dmg; party.bossStunned = true;
+          lines.push(`${member.name}: ${skill.name} - ${boss.name}에게 ${dmg} 피해 + 스턴`); break;
         }
         case "def_break": {
-          const reducedDef = Math.max(0, boss.def - (skill.defBreak || 0));
-          const dmg = Math.max(1, playerDamage(member, skill.multiplier) - reducedDef);
+          const dmg = Math.max(1, playerDamage(member, skill.multiplier) - Math.max(0, boss.def - (skill.defBreak || 0)));
           party.bossHp -= dmg;
-          lines.push(`${member.name}: ${skill.name} - 방어 돌파! ${boss.name}에게 ${dmg} 피해`);
-          break;
+          lines.push(`${member.name}: ${skill.name} - 방어 돌파! ${boss.name}에게 ${dmg} 피해`); break;
         }
-        case "damage_heal": {
+        case "damage_heal": case "drain": {
           const dmg = Math.max(1, playerDamage(member, skill.multiplier) - boss.def);
           party.bossHp -= dmg;
           const heal = Math.floor(ms.maxHp * (skill.healPercent / 100));
           member.hp = Math.min(ms.maxHp, member.hp + heal);
-          lines.push(`${member.name}: ${skill.name} - ${dmg} 피해 & HP +${heal} 회복`);
-          break;
+          lines.push(`${member.name}: ${skill.name} - ${dmg} 피해 & HP +${heal} 회복`); break;
         }
         default: {
           const dmg = Math.max(1, playerDamage(member, skill.multiplier) - boss.def);
           party.bossHp -= dmg;
           lines.push(`${member.name}: ${skill.name} - ${boss.name}에게 ${dmg} 피해`);
-          break;
         }
       }
     } else {
-      // 기본 공격
       const dmg = Math.max(1, playerDamage(member) - boss.def);
       party.bossHp -= dmg;
       lines.push(`${member.name}: ${boss.name}에게 ${dmg} 피해`);
     }
-  }
+  };
 
-  // 보스 처치 확인
-  if (party.bossHp <= 0) {
+  const bossAttackPlayers = () => {
+    if (party.bossStunned) {
+      lines.push(`${boss.name}은 스턴 상태로 행동하지 못했습니다.`);
+      party.bossStunned = false;
+      return;
+    }
+    lines.push(`${boss.name}의 공격!`);
+    for (const memberId of party.members) {
+      const member = db.players[memberId];
+      if (!member || member.hp <= 0) continue;
+      const guarding = party.actions[memberId]?.type === "방어";
+      const taken = monsterDamage(member, boss, guarding);
+      member.hp = Math.max(0, member.hp - taken);
+      lines.push(member.hp <= 0
+        ? `  ${member.name}: ${taken} 피해 - 전투 불능!`
+        : `  ${member.name}: ${taken} 피해 (HP ${member.hp})`);
+    }
+  };
+
+  const checkVictory = () => {
+    if (party.bossHp > 0) return false;
     lines.push("", `${boss.name}${objectParticle(boss.name)} 처치했습니다!`);
     const rewardExp  = Math.ceil(boss.exp  / party.members.length);
     const rewardGold = Math.ceil(boss.gold / party.members.length);
@@ -1193,47 +1225,40 @@ function doDungeonAction(db, player, userId, action) {
       const member = db.players[memberId];
       if (!member) continue;
       if (member.hp <= 0) member.hp = 1;
-      const rewardLines = [...addRewards(member, rewardExp, rewardGold), ...rollBossDrops(member, boss)];
-      lines.push(`${member.name}: ${rewardLines.join(" / ")}`);
+      lines.push(`${member.name}: ${[...addRewards(member, rewardExp, rewardGold), ...rollBossDrops(member, boss)].join(" / ")}`);
       member.partyId = null;
     }
     delete db.parties[party.id];
-    return lines.join("\n");
-  }
+    return true;
+  };
 
-  // 보스 → 플레이어 반격 단계
-  lines.push("");
-  const bossStunned = Boolean(party.bossStunned);
-  party.bossStunned = false;
-
-  if (bossStunned) {
-    lines.push(`${boss.name}은 스턴 상태로 반격하지 못했습니다.`);
-  } else {
+  const checkDefeat = () => {
+    if (!party.members.every((id) => (db.players[id]?.hp ?? 0) <= 0)) return false;
     for (const memberId of party.members) {
-      const member = db.players[memberId];
-      if (!member || member.hp <= 0) continue;
-      const act = party.actions[memberId];
-      const guarding = act?.type === "방어";
-      const taken = monsterDamage(member, boss, guarding);
-      member.hp = Math.max(0, member.hp - taken);
-      if (member.hp <= 0) {
-        lines.push(`${member.name}: 보스 공격 ${taken} 피해 - 전투 불능!`);
-      } else {
-        lines.push(`${member.name}: 보스 공격 ${taken} 피해 (HP ${member.hp})`);
-      }
-    }
-  }
-
-  // 전원 전투 불능 시 던전 실패
-  const allDown = party.members.every((id) => (db.players[id]?.hp ?? 0) <= 0);
-  if (allDown) {
-    for (const memberId of party.members) {
-      const member = db.players[memberId];
-      if (member) { member.hp = 1; member.partyId = null; }
+      const m = db.players[memberId];
+      if (m) { m.hp = 1; m.partyId = null; }
     }
     delete db.parties[party.id];
     lines.push("", "전원 전투 불능! 던전에서 퇴각했습니다.");
-    return lines.join("\n");
+    return true;
+  };
+
+  // ── 턴 처리: 선공 플레이어 → 보스 → 후공 플레이어 ──
+  if (fastMembers.length) lines.push(`[선공 (dex ≥ ${bossDex})]`);
+  for (const id of fastMembers) processMemberAttack(id);
+  if (checkVictory()) return lines.join("\n");
+
+  lines.push("");
+  bossAttackPlayers();
+  if (checkDefeat()) return lines.join("\n");
+
+  if (slowMembers.length) {
+    const aliveSlowMembers = slowMembers.filter((id) => (db.players[id]?.hp ?? 0) > 0);
+    if (aliveSlowMembers.length) {
+      lines.push(`\n[후공 (dex < ${bossDex})]`);
+      for (const id of aliveSlowMembers) processMemberAttack(id);
+      if (checkVictory()) return lines.join("\n");
+    }
   }
 
   party.turn += 1;
