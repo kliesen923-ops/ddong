@@ -1084,7 +1084,8 @@ function doDungeonAction(db, player, userId, action) {
     ? { type: "skill", skillId: actionArg }
     : { type: actionName };
 
-  const missing = party.members.filter((id) => !party.actions[id]);
+  const aliveMembers = party.members.filter((id) => (db.players[id]?.hp ?? 0) > 0);
+  const missing = aliveMembers.filter((id) => !party.actions[id]);
   if (missing.length > 0) {
     return `행동을 기록했습니다. 대기 중: ${missing.length}명`;
   }
@@ -1191,6 +1192,7 @@ function doDungeonAction(db, player, userId, action) {
     for (const memberId of party.members) {
       const member = db.players[memberId];
       if (!member) continue;
+      if (member.hp <= 0) member.hp = 1;
       const rewardLines = [...addRewards(member, rewardExp, rewardGold), ...rollBossDrops(member, boss)];
       lines.push(`${member.name}: ${rewardLines.join(" / ")}`);
       member.partyId = null;
@@ -1215,12 +1217,23 @@ function doDungeonAction(db, player, userId, action) {
       const taken = monsterDamage(member, boss, guarding);
       member.hp = Math.max(0, member.hp - taken);
       if (member.hp <= 0) {
-        member.hp = 1;
-        lines.push(`${member.name}: 보스 공격 ${taken} 피해 - 위험!`);
+        lines.push(`${member.name}: 보스 공격 ${taken} 피해 - 전투 불능!`);
       } else {
         lines.push(`${member.name}: 보스 공격 ${taken} 피해 (HP ${member.hp})`);
       }
     }
+  }
+
+  // 전원 전투 불능 시 던전 실패
+  const allDown = party.members.every((id) => (db.players[id]?.hp ?? 0) <= 0);
+  if (allDown) {
+    for (const memberId of party.members) {
+      const member = db.players[memberId];
+      if (member) { member.hp = 1; member.partyId = null; }
+    }
+    delete db.parties[party.id];
+    lines.push("", "전원 전투 불능! 던전에서 퇴각했습니다.");
+    return lines.join("\n");
   }
 
   party.turn += 1;
