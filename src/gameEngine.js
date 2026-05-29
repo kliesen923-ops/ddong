@@ -1615,7 +1615,9 @@ function showArenaRoom(db, player, userId, prefix) {
 }
 
 function arenaRoomChoices(arena, userId) {
-  if (arena?.started) return arenaBattleChoices();
+  if (arena?.started) {
+    return arena.actions?.[userId] ? arenaWaitingChoices() : arenaBattleChoices();
+  }
   return [
     { label: "새로고침", command: "__arena_refresh" },
     { label: "나가기", command: "결투나가기" }
@@ -1630,6 +1632,13 @@ function arenaBattleChoices() {
   ];
 }
 
+function arenaWaitingChoices() {
+  return [
+    { label: "새로고침", command: "__arena_refresh" },
+    { label: "결투 포기", command: "결투포기" }
+  ];
+}
+
 function isArenaChoiceCommand(command) {
   const value = String(command || "");
   return (
@@ -1638,6 +1647,7 @@ function isArenaChoiceCommand(command) {
     value === "__arena_room_list" ||
     value === "__arena_refresh" ||
     value === "결투나가기" ||
+    value === "결투포기" ||
     value.startsWith("결투참가 ")
   );
 }
@@ -1650,7 +1660,8 @@ function isArenaRoomChoiceCommand(command) {
   const value = String(command || "");
   return (
     value === "__arena_refresh" ||
-    value === "결투나가기"
+    value === "결투나가기" ||
+    value === "결투포기"
   );
 }
 
@@ -1763,27 +1774,8 @@ function applyArenaSkill(arena, attacker, defender, skill, lines) {
   }
 }
 
-function doArenaAction(db, player, userId, action) {
-  const arena = activeArena(db, player);
-  if (!arena || !arena.started) return null;
-  const [actionName, actionArg] = String(action || "").split(/\s+/);
-  const validActions = ["공격", "방어", "스킬사용"];
-  if (!validActions.includes(actionName)) return "결투 행동: 1.공격 2.스킬 3.방어";
-  if (arena.actions[userId]) return "이미 이번 턴 행동을 선택했습니다. 상대를 기다리세요.";
-
-  if (actionName === "스킬사용") {
-    const skill = findSkill(player, actionArg);
-    if (!skill) return "사용할 수 없는 스킬입니다.";
-    if (player.mp < skill.mpCost) return `MP가 부족합니다. 필요 MP: ${skill.mpCost}`;
-  }
-
-  arena.actions[userId] = actionName === "스킬사용"
-    ? { type: "skill", skillId: actionArg }
-    : { type: actionName };
-
-  const missing = arena.members.filter((id) => !arena.actions[id]);
-  if (missing.length) return `행동을 기록했습니다. 상대의 행동을 기다립니다.`;
-
+// 양쪽 actions가 모두 채워진 상태에서 호출. { text, ended } 반환
+function resolveArenaBattle(db, arena) {
   const [aId, bId] = arena.members;
   const a = db.players[aId];
   const b = db.players[bId];
@@ -1839,11 +1831,12 @@ function doArenaAction(db, player, userId, action) {
     lines.push("");
     lines.push(`${winner.name} 전적: ${pvpSummary(winner)} (${mmr.winnerDelta >= 0 ? "+" : ""}${mmr.winnerDelta})`);
     lines.push(`${loser.name} 전적: ${pvpSummary(loser)} (${mmr.loserDelta >= 0 ? "+" : ""}${mmr.loserDelta})`);
-    return lines.join("\n");
+    return { text: lines.join("\n"), ended: true };
   }
 
   arena.turn += 1;
   arena.actions = {};
+  arena.actionDeadline = null;
   lines.push("");
   for (const memberId of arena.members) {
     const member = db.players[memberId];
@@ -1851,7 +1844,78 @@ function doArenaAction(db, player, userId, action) {
     lines.push(...combatStatusLines(member.name, member.hp, s.maxHp, member.mp, s.maxMp));
   }
   lines.push("", "다음 행동을 선택하세요.");
+  return { text: lines.join("\n"), ended: false };
+}
+
+function storePendingArenaResult(db, userId, result) {
+  db.pendingArenaResults = db.pendingArenaResults || {};
+  db.pendingArenaResults[userId] = result;
+}
+
+// 타임아웃 체크: 기한 초과 시 미행동 플레이어를 자동 공격으로 처리하고 결과 반환
+function checkArenaTimeout(db, arena, requesterId) {
+  if (!arena.actionDeadline || Date.now() <= arena.actionDeadline) return null;
+  for (const memberId of arena.members) {
+    if (!arena.actions[memberId]) arena.actions[memberId] = { type: "공격" };
+  }
+  arena.actionDeadline = null;
+  const result = resolveArenaBattle(db, arena);
+  const opponentId = arena.members.find((id) => id !== requesterId);
+  if (opponentId) storePendingArenaResult(db, opponentId, result);
+  return result;
+}
+
+function forfeitArena(db, player, userId) {
+  const arena = activeArena(db, player);
+  if (!arena || !arena.started) return "진행 중인 결투가 없습니다.";
+  const opponentId = arena.members.find((id) => id !== userId);
+  const opponent = opponentId ? db.players[opponentId] : null;
+  if (!opponent) return "상대 플레이어 정보를 찾을 수 없습니다.";
+  const mmr = recordArenaResult(opponent, player);
+  player.hp = 1;
+  const lines = [
+    `${player.name}이(가) 결투를 포기했습니다.`,
+    `${opponent.name}의 승리!`,
+    "",
+    `${opponent.name} 전적: ${pvpSummary(opponent)} (${mmr.winnerDelta >= 0 ? "+" : ""}${mmr.winnerDelta})`,
+    `${player.name} 전적: ${pvpSummary(player)} (${mmr.loserDelta >= 0 ? "+" : ""}${mmr.loserDelta})`
+  ];
+  player.arenaId = null;
+  opponent.arenaId = null;
+  delete db.arenas[arena.id];
+  storePendingArenaResult(db, opponentId, { text: lines.join("\n"), ended: true });
   return lines.join("\n");
+}
+
+function doArenaAction(db, player, userId, action) {
+  const arena = activeArena(db, player);
+  if (!arena || !arena.started) return null;
+  const [actionName, actionArg] = String(action || "").split(/\s+/);
+  const validActions = ["공격", "방어", "스킬사용"];
+  if (!validActions.includes(actionName)) return "결투 행동: 1.공격 2.스킬 3.방어";
+  if (arena.actions[userId]) return "이미 이번 턴 행동을 선택했습니다. 상대를 기다리세요.";
+
+  if (actionName === "스킬사용") {
+    const skill = findSkill(player, actionArg);
+    if (!skill) return "사용할 수 없는 스킬입니다.";
+    if (player.mp < skill.mpCost) return `MP가 부족합니다. 필요 MP: ${skill.mpCost}`;
+  }
+
+  arena.actions[userId] = actionName === "스킬사용"
+    ? { type: "skill", skillId: actionArg }
+    : { type: actionName };
+
+  const opponentId = arena.members.find((id) => id !== userId);
+  const missing = arena.members.filter((id) => !arena.actions[id]);
+  if (missing.length) {
+    arena.actionDeadline = Date.now() + 15000;
+    return "행동을 기록했습니다. 상대의 행동을 기다립니다. (15초 내 미행동 시 자동 공격)";
+  }
+
+  arena.actionDeadline = null;
+  const result = resolveArenaBattle(db, arena);
+  if (opponentId) storePendingArenaResult(db, opponentId, result);
+  return result.text;
 }
 
 function generalChoices() {
@@ -2072,7 +2136,8 @@ function resolveNumberChoice(db, player, userId, text) {
   const arena = player.arenaId ? db.arenas[player.arenaId] : null;
   if (arena?.started) {
     if (player.choices?.length) return resolveVisibleChoice(player, number, text);
-    return arenaBattleChoices()[index]?.command || text;
+    const defaultChoices = arena.actions?.[userId] ? arenaWaitingChoices() : arenaBattleChoices();
+    return defaultChoices[index]?.command || text;
   }
   if (arena && !arena.started) {
     return arenaRoomChoices(arena, userId)[index]?.command || text;
@@ -2108,8 +2173,32 @@ async function handleCommand(userId, rawText) {
   let backCommand = null;
 
   try {
+    // 보류된 결투 결과 먼저 전달
+    if (db.pendingArenaResults?.[userId]) {
+      const pending = db.pendingArenaResults[userId];
+      delete db.pendingArenaResults[userId];
+      const pendingChoices = pending.ended ? generalChoices() : arenaBattleChoices();
+      player.choices = pendingChoices;
+      player.choiceBackCommand = null;
+      player.choicePage = 0;
+      return appendChoices(player, pending.text, pendingChoices);
+    }
+
+    // 결투 타임아웃 체크 (대기 중 상대가 15초 내 행동 안 한 경우)
+    const arenaForTimeout = player.arenaId ? db.arenas[player.arenaId] : null;
+    if (arenaForTimeout?.started) {
+      const timeoutResult = checkArenaTimeout(db, arenaForTimeout, userId);
+      if (timeoutResult) {
+        const timeoutChoices = timeoutResult.ended ? generalChoices() : arenaBattleChoices();
+        player.choices = timeoutChoices;
+        player.choiceBackCommand = null;
+        player.choicePage = 0;
+        return appendChoices(player, timeoutResult.text, timeoutChoices);
+      }
+    }
+
     const arenaReply =
-      command === "__show_choices" || command === "__battle_skills" || command === "스킬" || command.startsWith("__arena") || command === "결투나가기"
+      command === "__show_choices" || command === "__battle_skills" || command === "스킬" || command.startsWith("__arena") || command === "결투나가기" || command === "결투포기"
         ? null
         : doArenaAction(db, player, userId, text);
 
@@ -2359,6 +2448,9 @@ async function handleCommand(userId, rawText) {
     } else if (command === "결투나가기") {
       reply   = leaveArena(db, player, userId);
       choices = generalChoices();
+    } else if (command === "결투포기") {
+      reply   = forfeitArena(db, player, userId);
+      choices = generalChoices();
     // ── 던전 ──
     } else if (command === "__dungeon_menu") {
       reply   = ["[던전]", "방을 만들거나, 열린 방에 참가하세요."].join("\n");
@@ -2419,7 +2511,7 @@ async function handleCommand(userId, rawText) {
     if (db.battles[userId] && !choices.length) {
       choices = battleChoices();
     } else if (arena?.started && !choices.length) {
-      choices = arenaBattleChoices();
+      choices = arena.actions?.[userId] ? arenaWaitingChoices() : arenaBattleChoices();
     } else if (arena && !choices.length) {
       choices = arenaRoomChoices(arena, userId);
     } else if (party?.started && !choices.length) {
