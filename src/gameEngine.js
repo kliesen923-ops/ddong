@@ -513,7 +513,7 @@ function startHunt(db, player, userId) {
   const monster = { ...monsters[monsterId], id: monsterId };
   db.battles[userId] = { type: "solo", monster, monsterHp: monster.hp, turn: 1 };
   const s = calcStats(player);
-  return [
+  const text = [
     `${ground.name}에서 ${monster.name}${objectParticle(monster.name)} 만났습니다.`,
     "",
     `[전투 1턴]`,
@@ -522,6 +522,7 @@ function startHunt(db, player, userId) {
     "",
     "행동을 선택하세요."
   ].join("\n");
+  return monster.image ? { text, imageUrl: monster.image } : text;
 }
 
 function doBattleTurn(db, player, userId, action) {
@@ -2432,7 +2433,14 @@ async function handleCommand(userId, rawText) {
     if (command !== "__show_choices" && !/^\d+$/.test(command)) player.choicePage = 0;
     player.choices = choices;
     player.choiceBackCommand = backCommand;
+
+    let imageUrl = null;
+    if (reply && typeof reply === "object" && reply.imageUrl) {
+      imageUrl = reply.imageUrl;
+      reply = reply.text;
+    }
     reply = appendChoices(player, reply, choices);
+    if (imageUrl) reply = { text: reply, imageUrl };
   } finally {
     await saveDb(db);
   }

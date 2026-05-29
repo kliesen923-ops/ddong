@@ -1,4 +1,6 @@
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const { handleCommand } = require("./src/gameEngine");
 const { initDb } = require("./src/dbClient");
 
@@ -41,12 +43,20 @@ function kakaoResponse(text) {
   return {
     version: "2.0",
     template: {
+      outputs: [{ simpleText: { text } }]
+    }
+  };
+}
+
+function kakaoImageResponse(imageUrl, text) {
+  const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
+  const absoluteUrl = imageUrl.startsWith("http") ? imageUrl : `${baseUrl}${imageUrl}`;
+  return {
+    version: "2.0",
+    template: {
       outputs: [
-        {
-          simpleText: {
-            text
-          }
-        }
+        { simpleImage: { imageUrl: absoluteUrl, altText: "몬스터 이미지" } },
+        { simpleText: { text } }
       ]
     }
   };
@@ -77,10 +87,25 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && req.url.startsWith("/images/")) {
+      const filePath = path.join(__dirname, "public", req.url);
+      const ext = path.extname(filePath).toLowerCase();
+      const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" }[ext];
+      fs.readFile(filePath, (err, data) => {
+        if (err) { res.writeHead(404); res.end("Not found"); return; }
+        res.writeHead(200, { "Content-Type": mime || "application/octet-stream" });
+        res.end(data);
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/kakao/skill") {
       const payload = await readBody(req);
-      const text = await handleCommand(getKakaoUserId(payload), getKakaoText(payload));
-      sendJson(res, 200, kakaoResponse(text));
+      const result = await handleCommand(getKakaoUserId(payload), getKakaoText(payload));
+      const response = (result && typeof result === "object" && result.imageUrl)
+        ? kakaoImageResponse(result.imageUrl, result.text)
+        : kakaoResponse(result);
+      sendJson(res, 200, response);
       return;
     }
 
