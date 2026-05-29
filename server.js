@@ -104,9 +104,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/kakao/skill") {
       const payload = await readBody(req);
       const result = await handleCommand(getKakaoUserId(payload), getKakaoText(payload));
-      const response = (result && typeof result === "object" && result.imageUrl)
-        ? kakaoImageResponse(result.imageUrl, result.text)
-        : kakaoResponse(result);
+      let response;
+      if (result && typeof result === "object" && result.imageUrl) {
+        const filePath = path.join(__dirname, "public", result.imageUrl);
+        const imageExists = fs.existsSync(filePath);
+        response = imageExists
+          ? kakaoImageResponse(result.imageUrl, result.text)
+          : kakaoResponse(result.text);
+      } else {
+        response = kakaoResponse(result);
+      }
       sendJson(res, 200, response);
       return;
     }
